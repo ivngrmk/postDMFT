@@ -3,6 +3,9 @@ import ana_cont.continuation as cont
 from IPython.utils import io
 from scipy import interpolate
 from scipy import linalg as lg
+from scipy import optimize as opt
+
+FLOATZERO = 10**(-8)
 
 # Details of ana_cont API and usage can be find: https://josefkaufmann.github.io/ana_cont/api_doc.html and https://arxiv.org/abs/2105.11211 .
 
@@ -203,6 +206,9 @@ class HubbardSystem():
         if "delta" not in self.saved_phys_prop:
             self.saved_phys_prop.append('delta')
         self.delta = (np.pi-self.q[0])/np.pi
+        if "nkp" not in self.saved_calc_prop:
+            self.saved_calc_prop.append('nkp')
+        self.nkp = 0
 
     def get_thermodynamic_properties(self,fn = "solver.nmat999.dat"):
         """ Method to load thermodynamic information about calculation.
@@ -427,56 +433,44 @@ class SpectralFunction():
 
 class iQISTResponse():
     """ Base class to represent lattice response-like functions (on the imaginary axis)."""
-    def __init__(self, nkp: int, hs: HubbardSystem):
+    def __init__(self, hs: HubbardSystem):
         # Frequency mesh on imaginary axis with shape (nbfrq,), values are purely real and belong to [0,+inf).
         self.im_mesh = 2*np.arange(hs.nbfrq)*np.pi/hs.beta
         # HubbardSystem object.
         self.hs = hs
-        self.hs.saved_calc_prop.append(nkp) # Adding additional information about the wave vector mesh self.wv_mesh .
+        # Boolean flag to secure objects of the class from usage before the interpolation has been performed.
+        self.interpolated = False
+
+    def load_from_array(self, nkp: int, data: np.ndarray):
+        # Adding information about wave vector grid.
         self.hs.nkp = nkp
         # Wave-vector mesh on full Brillouin zone.
         self.wv_mesh = np.linspace(-np.pi,np.pi,self.hs.nkp*2+1,endpoint=True)
         # Array of data points on imaginary axis with shape (nbfrq,2*nkp+1,2*nkp+1,nidx,nidx).
-        self.im_data = np.zeros((hs.nbfrq,2*self.hs.nkp+1,2*self.hs.nkp+1,4,4),dtype=complex)
-
-class Phi(iQISTResponse):
-    """ Class to represent lattice phi function (on the imaginary axis)."""
-    def __init__(self, nkp: int, hs: HubbardSystem):
-        super().__init__(nkp, hs)
-        # Boolean flag to secure objects of the class from usage before the interpolation has been performed.
-        self.interpolated = False
-
-    def load_phi(self,fn="nonloc.phi.dat"):
-        """ Function to load data written in iQIST format from a nonloc.phi.dat file."""
-        file = open(fn,'r')
-        for line in file:
-            words = line.split()
-            if words != [] and words[0] != '#':
-                k = int(words[0])-1
-                iqx = int(words[1])+self.hs.nkp
-                iqy = int(words[2])+self.hs.nkp
-                n = int(words[3])-1
-                m = int(words[4])-1
-                re = float(words[5])
-                im = float(words[6])
-                self.im_data[k,iqx,iqy,n,m]=complex(re,im)
-        file.close()
-
+        self.im_data = np.zeros((self.hs.nbfrq,2*self.hs.nkp+1,2*self.hs.nkp+1,4,4),dtype=complex)
+        if self.im_data.shape == data.shape:
+            self.im_data = data.copy()
+        else:
+            raise TypeError
+        
     def interpolate(self):
-        """ Method to create functions which interpolate phi on the Brillouin zone."""
-        self.interpolated = True
-        # np.empty is used to make a convenient data structure.
-        # As RectBivariateSpline handles only real-valued functions, here i create functions both for real and imaginary parts.
-        self.component_functions_re = np.empty((self.hs.nbfrq,4,4),dtype=object)
-        self.component_functions_im = np.empty((self.hs.nbfrq,4,4),dtype=object)
-        for k in range(self.hs.nbfrq):
-            for n in range(4):
-                for m in range(4):
-                    self.component_functions_re[k,n,m] = interpolate.RectBivariateSpline(self.wv_mesh,self.wv_mesh,np.real(self.im_data[k,:,:,n,m]))
-                    self.component_functions_im[k,n,m] = interpolate.RectBivariateSpline(self.wv_mesh,self.wv_mesh,np.imag(self.im_data[k,:,:,n,m]))
+        """ Method to create functions which interpolate response function on the Brillouin zone."""
+        if self.hs.nkp > 0:
+            self.interpolated = True
+            # np.empty is used to make a convenient data structure.
+            # As RectBivariateSpline handles only real-valued functions, here i create functions both for real and imaginary parts.
+            self.component_functions_re = np.empty((self.hs.nbfrq,4,4),dtype=object)
+            self.component_functions_im = np.empty((self.hs.nbfrq,4,4),dtype=object)
+            for k in range(self.hs.nbfrq):
+                for n in range(4):
+                    for m in range(4):
+                        self.component_functions_re[k,n,m] = interpolate.RectBivariateSpline(self.wv_mesh,self.wv_mesh,np.real(self.im_data[k,:,:,n,m]))
+                        self.component_functions_im[k,n,m] = interpolate.RectBivariateSpline(self.wv_mesh,self.wv_mesh,np.imag(self.im_data[k,:,:,n,m]))
+        else:
+            raise RuntimeError
         
     def __call__(self, k: int, qx_i, qy_i):
-        """ After the interpolation precedure phi can be called as a matrix-valued function of
+        """ After the interpolation precedure the response function can be called as a matrix-valued function of
         k: bosonic imaginary frequency index;
         qx_i and qy_i: wave vector components.
         It returns a matrix of the shape (4,4) ."""
@@ -490,8 +484,32 @@ class Phi(iQISTResponse):
                     tmp_matrix[n,m] = self.component_functions_re[k][n][m](qx,qy) + 1j*self.component_functions_im[k][n][m](qx,qy)
             return tmp_matrix
         else:
-            # Raises RuntimeError if the interpolations wasn't performed yet. 
+            # Raises RuntimeError if the interpolation wasn't performed yet. 
             raise RuntimeError
+
+class Phi(iQISTResponse):
+    """ Class to represent lattice phi function (on the imaginary axis)."""
+    def load_from_file(self,nkp: int,fn = "nonloc.phi.dat"):
+        """ Function to load data written in iQIST format from a nonloc.phi.dat file."""
+        # Adding information about wave vector grid.
+        self.hs.nkp = nkp
+        # Wave-vector mesh on full Brillouin zone.
+        self.wv_mesh = np.linspace(-np.pi,np.pi,self.hs.nkp*2+1,endpoint=True)
+        # Array of data points on imaginary axis with shape (nbfrq,2*nkp+1,2*nkp+1,nidx,nidx).
+        self.im_data = np.zeros((self.hs.nbfrq,2*self.hs.nkp+1,2*self.hs.nkp+1,4,4),dtype=complex)
+        file = open(fn,'r')
+        for line in file:
+            words = line.split()
+            if words != [] and words[0] != '#':
+                k = int(words[0])-1
+                iqx = int(words[1])+self.hs.nkp
+                iqy = int(words[2])+self.hs.nkp
+                n = int(words[3])-1
+                m = int(words[4])-1
+                re = float(words[5])
+                im = float(words[6])
+                self.im_data[k,iqx,iqy,n,m]=complex(re,im)
+        file.close()
         
     def get_eigenvalues(self, k: int, qx, qy):
         """ Method to return eigenvalues of the [I - \phi \hat{U}] matrix as function of
@@ -507,6 +525,45 @@ class Phi(iQISTResponse):
             return np.sort(evs)
         else:
             raise RuntimeError
+        
+    def find_min_eigenvalue(self, k = 0):
+        """ Method to find the wave vector where the smallest eigenvalue becomes minimal.
+        returns: min_wv - wave vector, where the smallest eigenvalue becomes minimal;
+                 needed_regularization - needed regularization element to remove negative values of the eigenvalues."""
+        if self.interpolated:
+            minres = opt.minimize(lambda x: np.real(self.get_eigenvalues(k,x[0],x[1])[0]), vBZ("M")-v2d(0.1*np.pi,0.0))
+            if minres.success:
+                min_wv = minres.x
+                needed_regularization = self.get_eigenvalues(k,min_wv[0],min_wv[1])[0]
+                if np.imag(needed_regularization) < FLOATZERO:
+                    return min_wv, -np.real(needed_regularization)
+                else:
+                    raise RuntimeError
+            else:
+                raise RuntimeError
+        else:
+            raise RuntimeError
+        
+    def compute_chi(self,nkp,regularization=0.0):
+        """ Method to compute chi from phi with regularization and for an updated value of nkp."""
+        if self.interpolated:
+            U_matrix = np.zeros((4,4))
+            U_matrix[0,3]=U_matrix[3,0] = -self.hs.U
+            U_matrix[1,1]=U_matrix[2,2] = +self.hs.U
+            new_wv_mesh = np.linspace(-np.pi,np.pi,2*nkp+1,endpoint=True)
+            chi_mesh = np.zeros((self.hs.nbfrq,2*nkp+1,2*nkp+1,4,4),dtype=complex)
+            for k in range(self.hs.nbfrq):
+                for iqx in range(2*nkp+1):
+                    for iqy in range(2*nkp+1):
+                        qx = new_wv_mesh[iqx]
+                        qy = new_wv_mesh[iqy]
+                        chi_mesh[k,iqx,iqy,:,:] = np.matmul(lg.inv(np.identity(4)*(1+regularization) - np.matmul(self(k,qx,qy),U_matrix)),self(k,qx,qy))
+            return new_wv_mesh, chi_mesh
+        else:
+            raise RuntimeError
+        
+class Chi(iQISTResponse):
+    pass
 
 if __name__ == "__main__":
     print("Imports fine.")
