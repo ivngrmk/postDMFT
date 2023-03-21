@@ -1,6 +1,5 @@
 import numpy as np
 import ana_cont.continuation as cont
-# from triqs.gf import GfImFreq
 from IPython.utils import io
 from scipy import interpolate
 from scipy import linalg as lg
@@ -8,10 +7,124 @@ from scipy import linalg as lg
 # Details of ana_cont API and usage can be find: https://josefkaufmann.github.io/ana_cont/api_doc.html and https://arxiv.org/abs/2105.11211 .
 
 def v2d(vx,vy):
-    """ Functions to easily create 2d wave vectors. """
+    """ Function to easily create 2d wave vectors."""
     v = np.zeros(2)
     v[0] = vx; v[1] = vy
     return v
+
+def vBZ(name):
+    """ Function to easily create 2d wave vectors of high-symmetry points in the first Brillouin zone."""
+    if   name == 'G':
+        return v2d(0.0,0.0)
+    elif name == 'M':
+        return v2d(np.pi,np.pi)
+    elif name == 'X':
+        return v2d(np.pi,0.0)
+    elif name == 'S':
+        return v2d(np.pi/2,np.pi/2)
+    else:
+        raise RuntimeError
+
+def periodic(qx_i):
+    """ Function to apply periodic conditions on the wave vector component."""
+    qx = qx_i
+    while qx < -np.pi or np.pi < qx:
+        if qx < -np.pi:
+            qx += 2*np.pi
+        if qx > np.pi:
+            qx -= 2*np.pi
+    return qx
+
+def map2array1d(func,array: np.ndarray,dtype=complex,answer_shape=None):
+    """ Function similar to the map function.
+    func: function of 2 arguments (1 2d wave vector);
+        this function can be vector-valued or matrix-valued, returning result of a shape: answer_shape;
+    dtype: type of the func values;
+    array: ndarray of a shape (array.shape[0],2), which represents 1d manifold in the 2d Brillouin zone.
+    return: ndarray of a shape (array.shape[0],) + answer_shape."""
+    if answer_shape is None:
+        answer = np.zeros(array.shape[0],dtype=dtype)
+    else:
+        answer = np.zeros((array.shape[0],)+answer_shape,dtype=dtype)
+    for i,x in enumerate(array):
+        answer[i] = func(x[0],x[1])
+    return answer
+
+def map2array2d(func,array,dtype=complex,answer_shape=None):
+    """ Function similar to the map function.
+    func: function of 2 arguments (1 2d wave vector);
+        this function can be vector-valued or matrix-valued, returning result of a shape: answer_shape;
+    dtype: type of the func values;
+    array: ndarray of a shape (array.shape[0],array.shape[1],2), which represents 2d manifold in the 2d Brillouin zone.
+    return: ndarray of a shape (array.shape[0],array.shape[1]) + answer_shape."""
+    if answer_shape is None:
+        answer = np.zeros((array.shape[0],array.shape[1]),dtype=dtype)
+    else:
+        answer = np.zeros((array.shape[0],array.shape[1])+answer_shape,dtype=dtype)
+    for i in range(array.shape[0]):
+        for j in range(array.shape[1]):
+            x = array[i,j,:]
+            answer[i,j] = func(x[0],x[1])
+    return answer
+
+def rectangle_mesh(q1: np.ndarray,q2: np.ndarray,nkp_x: int,nkp_y: int):
+    """ Function to create 2d grid-mesh on a reсtangle, based on wave vectors q1 and q2.
+    nkp_x and nkp_y: number of points along x-axis and along y-axis. 
+    returns: ndarray of a shape (nkp_x,nkp_y,2) ."""
+    mesh = np.zeros((nkp_x,nkp_y,2))
+    Tx = np.linspace(0.0,1.0,nkp_x,endpoint=True)
+    Ty = np.linspace(0.0,1.0,nkp_y,endpoint=True)
+    for i,tx in enumerate(Tx):
+        for j,ty in enumerate(Ty):
+            # dim \in {x,y}
+            for dim in range(2):
+                if dim == 0:
+                    t = tx
+                else:
+                    t = ty
+                mesh[i,j,dim] = (q2 - q1)[dim]*t + q1[dim]
+    return mesh
+
+def line_mesh(q1: np.ndarray,q2: np.ndarray,nkp: int):
+    """ Function to create 1d grid-mesh on an interval, based on wave vectors q1 and q2.
+    nkp: number of points along the interval.
+    returns: ndarray of a shape (nkp,2) ."""
+    mesh = np.zeros((nkp,2))
+    T = np.linspace(0.0,1.0,nkp,endpoint=True)
+    for i,t in enumerate(T):
+        # dim \in {x,y}
+        for dim in range(2):
+            mesh[i,dim] = (q2-q1)[dim]*t + q1[dim]
+    return mesh
+
+class BZPath():
+    """ Class to manage broken path in the Brillouin zone."""
+    def __init__(self,points_list,nkp):
+        """ points: list of the points making up the broken path;
+                len(points) = self.nint + 1;
+                self.nint - number of intervals;
+            nkp: number of points on each separate interval. """
+        # list of points making up the broken path.
+        self.points = points_list
+        # number of intervals
+        self.nint = len(self.points)-1
+        # array with interval's lengths.
+        self.lengths = np.zeros(self.nint)
+        # self.mesh is a resulting ndarray with a shape (self.nint*nkp,2) containing constructed grid.
+        for i in range(self.nint):
+            if i == self.nint - 1:
+                interval_mesh = line_mesh(self.points[i],self.points[i+1],nkp)
+            else:
+                # Number of points trick (...,nkp+1)[:-1,:] serves to make shapes of the self.mesh and self.T equal.
+                interval_mesh = line_mesh(self.points[i],self.points[i+1],nkp+1)[:-1,:]
+            length = lg.norm(self.points[i] - self.points[i+1])
+            if i == 0:
+                self.mesh = interval_mesh
+            else:
+                self.mesh = np.concatenate((self.mesh,interval_mesh),axis=0)
+            self.lengths[i] = length
+        # self.T contains values of the t-parameter which parametrizes the broken path. 
+        self.T = np.linspace(0.0,sum(self.lengths),self.nint*nkp,endpoint=True)
 
 class HubbardSystem():
     """ Class to keep all information about particular calculation: its parameters and thermodynamic properties. """
@@ -22,7 +135,6 @@ class HubbardSystem():
         self.saved_therm_prop = []
         # List to store names of all attributes storing calculation parameters.
         self.saved_calc_prop = []
-        
         
     def get_calculation_parameters(self,fn = "solver.ctqmc.in"):
         """ Method to load information about calculation.
@@ -116,6 +228,19 @@ class HubbardSystem():
         for value in ("nup","ndn","n","x","sz"):
             if not value in self.saved_therm_prop:
                 self.saved_therm_prop.append(value)
+
+    def __str__(self) -> str:
+        """ Method to print all saved parameters and properties."""
+        message = ""
+        for value_key in self.saved_phys_prop:
+            message += f"{value_key}: {getattr(self,value_key)}; "
+        message += "\n"
+        for value_key in self.saved_therm_prop:
+            message += f"{value_key}: {getattr(self,value_key):.4f}; "
+        message += "\n"
+        for value_key in self.saved_calc_prop:
+            message += f"{value_key}: {getattr(self,value_key)}; "
+        return message[:-1]        
 
     def print_info(self):
         """ Method to print all saved parameters and properties."""
@@ -299,6 +424,89 @@ class SpectralFunction():
         grn_temp[0,1] = (-grn_kpq[0,1] + grn_kmq[0,1])*1j
         grn_temp[1,0] = (+grn_kpq[1,0] - grn_kmq[1,0])*1j
         return -np.imag(grn_temp[0,0]/4+grn_temp[0,1]/4+grn_temp[1,0]/4+grn_temp[1,1]/4)/np.pi
+
+class iQISTResponse():
+    """ Base class to represent lattice response-like functions (on the imaginary axis)."""
+    def __init__(self, nkp: int, hs: HubbardSystem):
+        # Frequency mesh on imaginary axis with shape (nbfrq,), values are purely real and belong to [0,+inf).
+        self.im_mesh = 2*np.arange(hs.nbfrq)*np.pi/hs.beta
+        # HubbardSystem object.
+        self.hs = hs
+        self.hs.saved_calc_prop.append(nkp) # Adding additional information about the wave vector mesh self.wv_mesh .
+        self.hs.nkp = nkp
+        # Wave-vector mesh on full Brillouin zone.
+        self.wv_mesh = np.linspace(-np.pi,np.pi,self.hs.nkp*2+1,endpoint=True)
+        # Array of data points on imaginary axis with shape (nbfrq,2*nkp+1,2*nkp+1,nidx,nidx).
+        self.im_data = np.zeros((hs.nbfrq,2*self.hs.nkp+1,2*self.hs.nkp+1,4,4),dtype=complex)
+
+class Phi(iQISTResponse):
+    """ Class to represent lattice phi function (on the imaginary axis)."""
+    def __init__(self, nkp: int, hs: HubbardSystem):
+        super().__init__(nkp, hs)
+        # Boolean flag to secure objects of the class from usage before the interpolation has been performed.
+        self.interpolated = False
+
+    def load_phi(self,fn="nonloc.phi.dat"):
+        """ Function to load data written in iQIST format from a nonloc.phi.dat file."""
+        file = open(fn,'r')
+        for line in file:
+            words = line.split()
+            if words != [] and words[0] != '#':
+                k = int(words[0])-1
+                iqx = int(words[1])+self.hs.nkp
+                iqy = int(words[2])+self.hs.nkp
+                n = int(words[3])-1
+                m = int(words[4])-1
+                re = float(words[5])
+                im = float(words[6])
+                self.im_data[k,iqx,iqy,n,m]=complex(re,im)
+        file.close()
+
+    def interpolate(self):
+        """ Method to create functions which interpolate phi on the Brillouin zone."""
+        self.interpolated = True
+        # np.empty is used to make a convenient data structure.
+        # As RectBivariateSpline handles only real-valued functions, here i create functions both for real and imaginary parts.
+        self.component_functions_re = np.empty((self.hs.nbfrq,4,4),dtype=object)
+        self.component_functions_im = np.empty((self.hs.nbfrq,4,4),dtype=object)
+        for k in range(self.hs.nbfrq):
+            for n in range(4):
+                for m in range(4):
+                    self.component_functions_re[k,n,m] = interpolate.RectBivariateSpline(self.wv_mesh,self.wv_mesh,np.real(self.im_data[k,:,:,n,m]))
+                    self.component_functions_im[k,n,m] = interpolate.RectBivariateSpline(self.wv_mesh,self.wv_mesh,np.imag(self.im_data[k,:,:,n,m]))
+        
+    def __call__(self, k: int, qx_i, qy_i):
+        """ After the interpolation precedure phi can be called as a matrix-valued function of
+        k: bosonic imaginary frequency index;
+        qx_i and qy_i: wave vector components.
+        It returns a matrix of the shape (4,4) ."""
+        qx = periodic(qx_i)
+        qy = periodic(qy_i)
+        if self.interpolated:
+            tmp_matrix = np.zeros((4,4),dtype=complex)
+            for n in range(4):
+                for m in range(4):
+                    # Collects real and imaginary parts into one complex value.
+                    tmp_matrix[n,m] = self.component_functions_re[k][n][m](qx,qy) + 1j*self.component_functions_im[k][n][m](qx,qy)
+            return tmp_matrix
+        else:
+            # Raises RuntimeError if the interpolations wasn't performed yet. 
+            raise RuntimeError
+        
+    def get_eigenvalues(self, k: int, qx, qy):
+        """ Method to return eigenvalues of the [I - \phi \hat{U}] matrix as function of
+        k: bosonic imaginary frequency index;
+        qx and qy: wave vector components.
+        It returns sorted vector of the shape (4,). """
+        if self.interpolated:
+            U_matrix = np.zeros((4,4))
+            U_matrix[0,3]=U_matrix[3,0] = -self.hs.U
+            U_matrix[1,1]=U_matrix[2,2] = +self.hs.U
+            tmp_matrix = np.identity(4) - np.matmul(self(k,qx,qy),U_matrix)
+            evs = lg.eigvals(tmp_matrix)
+            return np.sort(evs)
+        else:
+            raise RuntimeError
 
 if __name__ == "__main__":
     print("Imports fine.")
