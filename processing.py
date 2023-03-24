@@ -144,9 +144,6 @@ class BZPath():
         self.points = points_list
         # number of intervals
         self.nint = len(self.points)-1
-        # array with interval's lengths.
-        self.lengths = np.zeros(self.nint)
-        # self.mesh is a resulting ndarray with a shape (self.nint*nkp,2) containing constructed grid.
         for i in range(self.nint):
             if i == self.nint - 1:
                 interval_mesh = line_mesh(
@@ -155,15 +152,19 @@ class BZPath():
                 # Number of points trick (...,nkp+1)[:-1,:] serves to make shapes of the self.mesh and self.T equal.
                 interval_mesh = line_mesh(
                     self.points[i], self.points[i+1], nkp+1)[:-1, :]
-            length = lg.norm(self.points[i] - self.points[i+1])
             if i == 0:
                 self.mesh = interval_mesh
             else:
                 self.mesh = np.concatenate((self.mesh, interval_mesh), axis=0)
-            self.lengths[i] = length
         # self.T contains values of the t-parameter which parametrizes the zig-zag path.
-        self.T = np.linspace(0.0, sum(self.lengths),
-                             self.nint*nkp, endpoint=True)
+        self.T = np.zeros(self.nint*nkp)
+        length = 0.0
+        for idx in range(self.nint*self.nkp):
+            if idx == 0:
+                self.T[idx] = 0.0
+            else:
+                length += lg.norm(self.mesh[idx]-self.mesh[idx-1])
+                self.T[idx] = length
 
     def __len__(self):
         return len(self.T)
@@ -533,9 +534,9 @@ class iQISTResponse():
                 for n in range(4):
                     for m in range(4):
                         self.component_functions_re[k, n, m] = interpolate.RectBivariateSpline(
-                            self.wv_mesh, self.wv_mesh, np.real(self.im_data[k, :, :, n, m]))
+                            self.wv_mesh, self.wv_mesh, np.real(self.im_data[k, :, :, n, m]),kx=5,ky=5)
                         self.component_functions_im[k, n, m] = interpolate.RectBivariateSpline(
-                            self.wv_mesh, self.wv_mesh, np.imag(self.im_data[k, :, :, n, m]))
+                            self.wv_mesh, self.wv_mesh, np.imag(self.im_data[k, :, :, n, m]),kx=5,ky=5)
         else:
             raise RuntimeError
 
