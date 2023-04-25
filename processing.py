@@ -1,5 +1,15 @@
 import numpy as np
-import ana_cont.continuation as cont
+import imp
+there_is_ana_cont = False
+try:
+    imp.find_module("ana_cont")
+    there_is_ana_cont = True
+except ImportError:
+    there_is_ana_cont = False
+if there_is_ana_cont:
+    import ana_cont.continuation as cont
+else:
+    print("WARNING: ana_cont was not found. Do not perform any analytic continuation stuff!")
 from IPython.utils import io
 from scipy import interpolate
 from scipy import linalg as lg
