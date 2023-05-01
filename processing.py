@@ -19,6 +19,9 @@ FLOATZERO = 10**(-8)
 
 # Details of ana_cont API and usage can be find: https://josefkaufmann.github.io/ana_cont/api_doc.html and https://arxiv.org/abs/2105.11211 .
 
+def Fermi(e,T):
+    return 1/(np.exp(e/T)+1)
+
 
 def spin2index(symbol):
     if symbol == 'x':
@@ -168,6 +171,8 @@ class BZPath():
                 self.mesh = np.concatenate((self.mesh, interval_mesh), axis=0)
         # self.T contains values of the t-parameter which parametrizes the zig-zag path.
         self.T = np.zeros(self.nint*nkp)
+        self.points_t = []
+        self.points_t_idx = []
         length = 0.0
         for idx in range(self.nint*self.nkp):
             if idx == 0:
@@ -175,6 +180,12 @@ class BZPath():
             else:
                 length += lg.norm(self.mesh[idx]-self.mesh[idx-1])
                 self.T[idx] = length
+            for point in points_list[len(self.points_t):]:
+                if np.allclose(self.mesh[idx],point):
+                    self.points_t.append(self.T[idx])
+                    self.points_t_idx.append(idx)
+                    break
+        self.points_t = np.array(self.points_t)
 
     def __len__(self):
         return len(self.T)
