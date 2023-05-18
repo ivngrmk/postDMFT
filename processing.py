@@ -476,7 +476,9 @@ class SimpleSE(iQISTCorrelator):
 
 
 class SpectralFunction():
-    """ Class representing spectral function defined at any energy w and at any wawevector k. """
+    """ Class representing spectral function defined at any energy w and at any wawevector k. 
+        The spectral function is normalized to unity.
+    """
 
     def __init__(self, hs: HubbardSystem, qshift: np.ndarray, se_up: interpolate.interp1d, se_dn: interpolate.interp1d):
         self.tt = hs.tt
