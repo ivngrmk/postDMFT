@@ -263,12 +263,13 @@ class HubbardSystem():
                     self.qy = float(words[-1])
                     if "qy" not in self.saved_phys_prop:
                         self.saved_phys_prop.append("qy")
-        # Order wawe vector q
-        self.q = np.array((self.qx, self.qy))
-        # Relative incommensurability.
-        if "delta" not in self.saved_phys_prop:
-            self.saved_phys_prop.append('delta')
-        self.delta = (np.pi-self.q[0])/np.pi
+        if "qx" in self.saved_phys_prop and "qy" in self.saved_phys_prop:
+            # Order wawe vector q
+            self.q = np.array((self.qx, self.qy))
+            # Relative incommensurability.
+            if "delta" not in self.saved_phys_prop:
+                self.saved_phys_prop.append('delta')
+            self.delta = (np.pi-self.q[0])/np.pi
         if "nkp" not in self.saved_calc_prop:
             self.saved_calc_prop.append('nkp')
         self.nkp = 0
@@ -298,7 +299,7 @@ class HubbardSystem():
             if not value in self.saved_therm_prop:
                 self.saved_therm_prop.append(value)
 
-    def __str__(self) -> str:
+    def __str__(self):
         """ Method to print all saved parameters and properties."""
         message = ""
         for value_key in self.saved_phys_prop:
@@ -646,7 +647,7 @@ class Phi(iQISTResponse):
         else:
             raise RuntimeError
 
-    def compute_chi(self, nkp: int, regularization = FLOATZERO) -> tuple[np.ndarray, np.ndarray]: 
+    def compute_chi(self, nkp, regularization = FLOATZERO): 
         """Method to compute the susceptibility chi from phi with regularization and for an updated value of nkp.
 
         Args:
