@@ -1,25 +1,18 @@
 import numpy as np
-import imp
-there_is_ana_cont = False
-try:
-    imp.find_module("ana_cont")
-    there_is_ana_cont = True
-except ImportError:
-    there_is_ana_cont = False
-if there_is_ana_cont:
-    import ana_cont.continuation as cont
-else:
-    print("WARNING: ana_cont was not found. Do not perform any analytic continuation stuff!")
+import ana_cont.continuation as cont
 from IPython.utils import io
 from scipy import interpolate
 from scipy import linalg as lg
 from scipy import optimize as opt
+from postDMFT.fourier import *
+import copy
 
 FLOATZERO = 10**(-8)
 
 # Details of ana_cont API and usage can be find: https://josefkaufmann.github.io/ana_cont/api_doc.html and https://arxiv.org/abs/2105.11211 .
 
-def Fermi(e,T):
+
+def Fermi(e, T):
     return 1/(np.exp(e/T)+1)
 
 
@@ -181,7 +174,7 @@ class BZPath():
                 length += lg.norm(self.mesh[idx]-self.mesh[idx-1])
                 self.T[idx] = length
             for point in points_list[len(self.points_t):]:
-                if np.allclose(self.mesh[idx],point):
+                if np.allclose(self.mesh[idx], point):
                     self.points_t.append(self.T[idx])
                     self.points_t_idx.append(idx)
                     break
@@ -464,6 +457,20 @@ class SimpleSE(iQISTCorrelator):
             self.re_data[:, sigma] = re_data.copy()
         self.was_continued = True
 
+    def ImAx(self, n: int):
+        """ Method to get SE values on the imaginary frequency axis at matsubara frequencies.
+
+        Args:
+            n (int): matsubara frequency number. 0 == the first Fermi matsubara frequency.
+
+        Returns:
+            ndarray: with a shape (2,) representing two complex values for spin up and spin dn.
+        """
+        if n >= 0:
+            return self.im_data[n]
+        else:
+            return np.conjugate(self.im_data[-n-1])
+
     def get_SE_functions(self):
         """ Method used to generate continuous SE function of real frequency as a resulst of an interpolation of descrete data. """
         if self.was_continued:
@@ -474,7 +481,45 @@ class SimpleSE(iQISTCorrelator):
             return se_up, se_dn
         else:
             raise RuntimeError
+        
+class LatticeGFImAx():
+    """ Class representing full lattice Green Functin on imaginary time axis in the local coordinate system.
+    """
 
+    def __init__(self, hs: HubbardSystem, se: SimpleSE):
+        self.tt = hs.tt
+        self.se = se
+        # Reload system physical parameters.
+        self.q = hs.q
+        self.mu = hs.mu
+        self.x = hs.x
+
+    def __call__(self, k: np.ndarray, n: int):
+        """ Method to get value of the GF.
+
+        Args:
+            k (np.ndarray): 2D wave vector.
+            n (int): matsubara frequency number. 0 == the first Fermi matsubara frequency.
+
+        Returns:
+             ndarray: with a shape (2,) representing two complex values for spin up and spin dn.
+        """
+        if n >= 0:
+            w = +1j*self.se.im_mesh[n]
+        else:
+            w = -1j*self.se.im_mesh[-n-1]  
+        se = self.se.ImAx(n)
+        # Dispersion relation.
+        def e_k(k):
+            return -2*1.0*(np.cos(k[0])+np.cos(k[1]))+4*self.tt*np.cos(k[0])*np.cos(k[1])
+        # Local GF matrix at k. Filling according to (9) formula from the article.
+        grn = np.zeros((2, 2), dtype=complex)
+        grn[0, 0] = w + self.mu - se[0] - (e_k(k-self.q/2)+e_k(k+self.q/2))/2
+        grn[1, 1] = w + self.mu - se[1] - (e_k(k-self.q/2)+e_k(k+self.q/2))/2
+        grn[0, 1] = +(e_k(k-self.q/2) - e_k(k+self.q/2))/2/1j
+        grn[1, 0] = -(e_k(k-self.q/2) - e_k(k+self.q/2))/2/1j
+        grn = lg.inv(grn)
+        return grn
 
 class SpectralFunction():
     """ Class representing spectral function defined at any energy w and at any wawevector k. 
@@ -544,7 +589,7 @@ class iQISTResponse():
         else:
             raise TypeError
 
-    def interpolate(self):
+    def interpolate(self, verbose=False, method="RB",method_settings={"Nx": 5, "Ny": 5}):
         """ Method to create functions which interpolate response function on the Brillouin zone."""
         if self.hs.nkp > 0:
             self.interpolated = True
@@ -554,13 +599,24 @@ class iQISTResponse():
                 (self.hs.nbfrq, 4, 4), dtype=object)
             self.component_functions_im = np.empty(
                 (self.hs.nbfrq, 4, 4), dtype=object)
-            for k in range(self.hs.nbfrq):
+            for kfreq in range(self.hs.nbfrq):
+                if verbose:
+                    print("k = ", kfreq)
                 for n in range(4):
                     for m in range(4):
-                        self.component_functions_re[k, n, m] = interpolate.RectBivariateSpline(
-                            self.wv_mesh, self.wv_mesh, np.real(self.im_data[k, :, :, n, m]),kx=5,ky=5)
-                        self.component_functions_im[k, n, m] = interpolate.RectBivariateSpline(
-                            self.wv_mesh, self.wv_mesh, np.imag(self.im_data[k, :, :, n, m]),kx=5,ky=5)
+                        if method == "fourier":
+                            approximant_coefficients = FourierApproximation2D(
+                                self.wv_mesh, self.wv_mesh, self.im_data[kfreq, :, :, n, m], method_settings["Nx"], method_settings["Ny"]).approximant.coefficients
+                            self.component_functions_re[kfreq, n, m] = TrygPoly2DRealPart(
+                                approximant_coefficients)
+                            self.component_functions_im[kfreq, n, m] = TrygPoly2DImagPart(
+                                approximant_coefficients)
+                        elif method == "RB":
+                            self.component_functions_re[kfreq, n, m] = interpolate.RectBivariateSpline(
+                                self.wv_mesh, self.wv_mesh, np.real(self.im_data[kfreq, :, :, n, m]), kx=5, ky=5)
+                            self.component_functions_im[kfreq, n, m] = interpolate.RectBivariateSpline(
+                                self.wv_mesh, self.wv_mesh, np.imag(self.im_data[kfreq, :, :, n, m]), kx=5, ky=5)
+            # Необходимо прикрутить вывод ошибки интерполяции для verbose = True.
         else:
             raise RuntimeError
 
@@ -647,7 +703,7 @@ class Phi(iQISTResponse):
         else:
             raise RuntimeError
 
-    def compute_chi(self, nkp, regularization = FLOATZERO): 
+    def compute_chi(self, nkp, regularization=FLOATZERO,verbose="False"):
         """Method to compute the susceptibility chi from phi with regularization and for an updated value of nkp.
 
         Args:
@@ -658,7 +714,7 @@ class Phi(iQISTResponse):
             tuple[np.ndarray, np.ndarray]: (new_wv_mesh, chi_mesh),
                 where new_wv_mesh has a shape (nkp*2+1,nkp*2+1) and stores wave vector points on the Brillouin zone,
                 and chi_mesh has a shape (nbfrq,2*nkp+1,2*nkp+1,nidx,nidx) and stores calculated chi complex values.
-        """        
+        """
         if regularization < 0.0:
             regularization = FLOATZERO
         if self.interpolated:
@@ -669,6 +725,8 @@ class Phi(iQISTResponse):
             chi_mesh = np.zeros(
                 (self.hs.nbfrq, 2*nkp+1, 2*nkp+1, 4, 4), dtype=complex)
             for k in range(self.hs.nbfrq):
+                if verbose:
+                    print("k = ", k)
                 for iqx in range(2*nkp+1):
                     for iqy in range(2*nkp+1):
                         qx = new_wv_mesh[iqx]
@@ -682,6 +740,7 @@ class Phi(iQISTResponse):
 
 class Chi(iQISTResponse):
     """ Class to represent lattice susceptibility chi function, including its analytic continuation to the real frequency axis."""
+
     def __init__(self, hs: HubbardSystem):
         super().__init__(hs)
         # Just the definition of Pauli matrices multiplied by factor 2.
@@ -690,6 +749,16 @@ class Chi(iQISTResponse):
         sigma_z = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=complex)
         self.Sigma = [sigma_x, sigma_y, sigma_z]
         self.continued = False
+        # Matrices to pass from default basis to spin basis.
+        self.TR = np.zeros((4,3),dtype=complex)
+        self.TL = np.zeros((3,4),dtype=complex)
+        for m in range(3):
+            for sigma1 in range(2):
+                for sigma2 in range(2):
+                    alpha = 2*sigma1+sigma2
+                    self.TR[alpha,m] = self.Sigma[m][sigma1,sigma2]
+                    self.TL[m,alpha] = self.Sigma[m][sigma2,sigma1]
+
 
     def __call__(self, k: int, qx_i, qy_i, representation="spin"):
         # Application of periodicity condition.
@@ -700,19 +769,21 @@ class Chi(iQISTResponse):
             for n in range(4):
                 for m in range(4):
                     # Collects real and imaginary parts into one complex value.
-                    tmp_matrix_default[n,m] = self.component_functions_re[k][n][m](qx,qy) + 1j*self.component_functions_im[k][n][m](qx,qy)
+                    tmp_matrix_default[n, m] = self.component_functions_re[k][n][m](
+                        qx, qy) + 1j*self.component_functions_im[k][n][m](qx, qy)
             if representation == "default":
                 return tmp_matrix_default
             else:
-                tmp_matrix_spin = np.zeros((3, 3), dtype=complex)
-                for m in range(3):
-                    for n in range(3):
-                        for sigma1 in range(2):
-                            for sigma2 in range(2):
-                                for sigma3 in range(2):
-                                    for sigma4 in range(2):
-                                        tmp_matrix_spin[m, n] += self.Sigma[m][sigma3, sigma4]*self.Sigma[n][sigma2, sigma1]*(
-                                            tmp_matrix_default[sigma1*2+sigma2, sigma3*2+sigma4])
+                tmp_matrix_spin = np.matmul(np.matmul(self.TL,tmp_matrix_default),self.TR)
+                # tmp_matrix_spin = np.zeros((3, 3), dtype=complex)
+                # for m in range(3):
+                    # for n in range(3):
+                        # for sigma1 in range(2):
+                            # for sigma2 in range(2):
+                                # for sigma3 in range(2):
+                                    # for sigma4 in range(2):
+                                        # tmp_matrix_spin[m, n] += self.Sigma[m][sigma3, sigma4]*self.Sigma[n][sigma2, sigma1]*(
+                                            # tmp_matrix_default[sigma1*2+sigma2, sigma3*2+sigma4])
                 if representation == "spin":
                     return tmp_matrix_spin
                 elif representation == "rotational":
@@ -732,7 +803,7 @@ class Chi(iQISTResponse):
             wv_path (BZPath): the path in the Brillouin zone along which the spectral density will be calculated.
             re_mesh (np.ndarray): positive real frequency mesh.
             component (tuple): tuple of a shape (s1,s2), where s1 and s2 are strings from {'x','y','z'} set.
-        """        
+        """
         self.continuation_wv_path = wv_path
         self.continuation_re_mesh = re_mesh
         self.continuation_re_data = np.zeros(
@@ -808,7 +879,6 @@ class Chi(iQISTResponse):
         else:
             raise RuntimeError(
                 "Analytic continuation was not yet performed.")
-
 
 if __name__ == "__main__":
     print("Imports fine.")
