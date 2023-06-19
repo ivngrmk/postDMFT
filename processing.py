@@ -6,6 +6,7 @@ from scipy import linalg as lg
 from scipy import optimize as opt
 from postDMFT.fourier import *
 import copy
+from typing import Self
 
 FLOATZERO = 10**(-8)
 
@@ -263,9 +264,6 @@ class HubbardSystem():
             if "delta" not in self.saved_phys_prop:
                 self.saved_phys_prop.append('delta')
             self.delta = (np.pi-self.q[0])/np.pi
-        if "nkp" not in self.saved_calc_prop:
-            self.saved_calc_prop.append('nkp')
-        self.nkp = 0
 
     def get_thermodynamic_properties(self, fn="solver.nmat999.dat"):
         """ Method to load thermodynamic information about calculation.
@@ -481,7 +479,8 @@ class SimpleSE(iQISTCorrelator):
             return se_up, se_dn
         else:
             raise RuntimeError
-        
+
+
 class LatticeGFImAx():
     """ Class representing full lattice Green Functin on imaginary time axis in the local coordinate system.
     """
@@ -507,9 +506,10 @@ class LatticeGFImAx():
         if n >= 0:
             w = +1j*self.se.im_mesh[n]
         else:
-            w = -1j*self.se.im_mesh[-n-1]  
+            w = -1j*self.se.im_mesh[-n-1]
         se = self.se.ImAx(n)
         # Dispersion relation.
+
         def e_k(k):
             return -2*1.0*(np.cos(k[0])+np.cos(k[1]))+4*self.tt*np.cos(k[0])*np.cos(k[1])
         # Local GF matrix at k. Filling according to (9) formula from the article.
@@ -521,8 +521,9 @@ class LatticeGFImAx():
         grn = lg.inv(grn)
         return grn
 
+
 class SpectralFunction():
-    """ Class representing spectral function defined at any energy w and at any wawevector k. 
+    """ Class representing spectral function defined at any energy w and at any wawevector k in the global frame. 
         The spectral function is normalized to unity.
     """
 
@@ -565,68 +566,140 @@ class SpectralFunction():
 
 
 class iQISTResponse():
-    """ Base class to represent lattice response-like functions (on the imaginary axis)."""
+    """
+    Class to represent wave-vector and  imaginary frequency -dependent response-like matrix-valued functions.
+
+    Parameters
+    ----------
+    hs : HubbardSystem
+        HubbardSystem instance which provides nesessary information to create data structures.
+
+    Attributes
+    ----------
+    hs : HubbardSystem
+        Saved HubbardSystem instance used to create iQISTResponse instance.
+    im_mesh : ndarray
+        Storage for nonnegative bosonic imaginary frequency values (without imaginary identity).
+    nkp : int
+        Number of positive k-points along each axis (total number of k-points is (2*nkp + 1)^2 ).
+    wv_mesh : ndarray
+        k-point mesh along each axis.
+    im_data : ndarray
+        Complex values of the response function. It's shape is (2*nkp+1,2*nkp+1,hs.nbfrq,4,4).
+    interpolated : bool
+        Flag where information about performed interpolation is stored.
+    """
 
     def __init__(self, hs: HubbardSystem):
-        # Frequency mesh on imaginary axis with shape (nbfrq,), values are purely real and belong to [0,+inf).
         self.im_mesh = 2*np.arange(hs.nbfrq)*np.pi/hs.beta
-        # HubbardSystem object.
         self.hs = hs
-        # Boolean flag to secure objects of the class from usage before the interpolation has been performed.
         self.interpolated = False
-
-    def load_from_array(self, nkp: int, data: np.ndarray):
-        # Adding information about wave vector grid.
-        self.hs.nkp = nkp
-        # Wave-vector mesh on full Brillouin zone.
-        self.wv_mesh = np.linspace(-np.pi, np.pi,
-                                   self.hs.nkp*2+1, endpoint=True)
-        # Array of data points on imaginary axis with shape (nbfrq,2*nkp+1,2*nkp+1,nidx,nidx).
+        self.nkp = 0
+        self.wv_mesh = np.linspace(-np.pi, np.pi, 2*self.nkp+1, endpoint=True)
         self.im_data = np.zeros(
-            (self.hs.nbfrq, 2*self.hs.nkp+1, 2*self.hs.nkp+1, 4, 4), dtype=complex)
+            (2*self.nkp+1, 2*self.nkp+1, self.hs.nbfrq, 4, 4), dtype=complex)
+
+    def load_from_array(self, data: np.ndarray):
+        """
+        Loads responce function's values from an ndarray and updates k-mesh-dependent structures respectively.
+
+        Parameters
+        ----------
+            data : ndarray
+                Complex values of the response function. It's shape should be (2*nkp+1,2*nkp+1,hs.nbfrq,4,4).
+        """
+        if data.shape[0] == data.shape[1]:
+            self.nkp = (data.shape[0] - 1) // 2
+        else:
+            raise TypeError("Number of k-points could not be obtained.")
+        self.wv_mesh = np.linspace(-np.pi, np.pi, self.nkp*2+1, endpoint=True)
+        self.im_data = np.zeros(
+            (2*self.nkp+1, 2*self.nkp+1, self.hs.nbfrq, 4, 4), dtype=complex)
         if self.im_data.shape == data.shape:
             self.im_data = data.copy()
         else:
-            raise TypeError
+            raise TypeError("Shape of loaded data structure is incompetible with the response function's shape.")
 
-    def interpolate(self, verbose=False, method="RB",method_settings={"Nx": 5, "Ny": 5}):
-        """ Method to create functions which interpolate response function on the Brillouin zone."""
-        if self.hs.nkp > 0:
-            self.interpolated = True
-            # np.empty is used to make a convenient data structure.
-            # As RectBivariateSpline handles only real-valued functions, here i create functions both for real and imaginary parts.
-            self.component_functions_re = np.empty(
-                (self.hs.nbfrq, 4, 4), dtype=object)
-            self.component_functions_im = np.empty(
-                (self.hs.nbfrq, 4, 4), dtype=object)
-            for kfreq in range(self.hs.nbfrq):
-                if verbose:
-                    print("k = ", kfreq)
-                for n in range(4):
-                    for m in range(4):
-                        if method == "fourier":
-                            approximant_coefficients = FourierApproximation2D(
-                                self.wv_mesh, self.wv_mesh, self.im_data[kfreq, :, :, n, m], method_settings["Nx"], method_settings["Ny"]).approximant.coefficients
-                            self.component_functions_re[kfreq, n, m] = TrygPoly2DRealPart(
-                                approximant_coefficients)
-                            self.component_functions_im[kfreq, n, m] = TrygPoly2DImagPart(
-                                approximant_coefficients)
-                        elif method == "RB":
-                            self.component_functions_re[kfreq, n, m] = interpolate.RectBivariateSpline(
-                                self.wv_mesh, self.wv_mesh, np.real(self.im_data[kfreq, :, :, n, m]), kx=5, ky=5)
-                            self.component_functions_im[kfreq, n, m] = interpolate.RectBivariateSpline(
-                                self.wv_mesh, self.wv_mesh, np.imag(self.im_data[kfreq, :, :, n, m]), kx=5, ky=5)
-            # Необходимо прикрутить вывод ошибки интерполяции для verbose = True.
+    def __add__(self, other_response: Self):
+        if self.im_data.shape != other_response.im_data.shape:
+            raise TypeError("Shapes of summands are incompetible.")
         else:
-            raise RuntimeError
+            new_response = iQISTResponse(self.hs)
+            new_response.load_from_array(self.im_data + other_response.im_data)
+            return new_response
 
-    def __call__(self, k: int, qx_i, qy_i):
+    def __matmul__(self, other_response: Self):
+        """
+        Multiplication of iQISTResponse instances
+        point-vise with respect to k-points and imaginary freuencies
+        but "matrix-like" with respect to spin multiindexes.
+        """
+        if self.im_data.shape != other_response.im_data.shape:
+            raise TypeError("Shapes of summands are incompetible.")
+        else:
+            new_response = iQISTResponse(self.hs)
+            new_response.load_from_array(self.im_data.copy())
+            for k in range(self.hs.nbfrq):
+                for iqx in range(self.nkp*2+1):
+                    for iqy in range(self.nkp*2+1):
+                        new_response.im_data[iqx, iqy, k, :, :] = np.matmul(
+                            self.im_data[iqx, iqy, k, :, :], other_response.im_data[iqx, iqy, k, :, :])
+            return new_response
+        
+    def __neg__(self):
+            new_response = iQISTResponse(self.hs)
+            new_response.load_from_array(-self.im_data.copy())
+            return new_response
+
+    def interpolate(self, verbose=False, method="RB", method_settings={"Nx": 5, "Ny": 5}):
+        """ Method to create functions which interpolate response function on the Brillouin zone."""
+        self.interpolated = True
+        # np.empty is used to make a convenient data structure.
+        # As RectBivariateSpline handles only real-valued functions, here i create functions both for real and imaginary parts.
+        self.component_functions_re = np.empty(
+            (self.hs.nbfrq, 4, 4), dtype=object)
+        self.component_functions_im = np.empty(
+            (self.hs.nbfrq, 4, 4), dtype=object)
+        for kfreq in range(self.hs.nbfrq):
+            if verbose:
+                print("k = ", kfreq)
+            for n in range(4):
+                for m in range(4):
+                    if method == "fourier":
+                        approximant_coefficients = FourierApproximation2D(
+                            self.wv_mesh, self.wv_mesh, self.im_data[:, :, kfreq, n, m], method_settings["Nx"], method_settings["Ny"]).approximant.coefficients
+                        self.component_functions_re[kfreq, n, m] = TrygPoly2DRealPart(
+                            approximant_coefficients)
+                        self.component_functions_im[kfreq, n, m] = TrygPoly2DImagPart(
+                            approximant_coefficients)
+                    elif method == "RB":
+                        self.component_functions_re[kfreq, n, m] = interpolate.RectBivariateSpline(
+                            self.wv_mesh, self.wv_mesh, np.real(self.im_data[:, :, kfreq, n, m]), kx=5, ky=5)
+                        self.component_functions_im[kfreq, n, m] = interpolate.RectBivariateSpline(
+                            self.wv_mesh, self.wv_mesh, np.imag(self.im_data[:, :, kfreq, n, m]), kx=5, ky=5)
+            # Возможно стоит прикрутить вывод ошибки интерполяции для verbose = True.
+
+    def refine_wv_mesh(self, new_nkp: int):
+        self.interpolate()
+        full_new_nkp = new_nkp*2 + 1
+        new_im_data = np.zeros(
+            (full_new_nkp, full_new_nkp, self.hs.nbfrq, 4, 4), dtype=complex)
+        Kaxis = np.linspace(-np.pi, np.pi, full_new_nkp, endpoint=True)
+        for iqx, qx in enumerate(Kaxis):
+            for iqy, qy in enumerate(Kaxis):
+                for k in range(self.hs.nbfrq):
+                    new_im_data[iqx, iqy, k, :, :] = self(v2d(qx, qy), k)
+        new_response = iQISTResponse(self.hs)
+        new_response.load_from_array(new_im_data)
+        return new_response
+
+    def __call__(self, q: np.ndarray, k: int):
         """ After the interpolation precedure the response function can be called as a matrix-valued function of
         k: bosonic imaginary frequency index;
         qx_i and qy_i: wave vector components.
         It returns a matrix of the shape (4,4) ."""
-        qx = periodic(qx_i)
-        qy = periodic(qy_i)
+        qx = periodic(q[0])
+        qy = periodic(q[1])
         if self.interpolated:
             tmp_matrix = np.zeros((4, 4), dtype=complex)
             for n in range(4):
@@ -636,8 +709,7 @@ class iQISTResponse():
                         qx, qy) + 1j*self.component_functions_im[k][n][m](qx, qy)
             return tmp_matrix
         else:
-            # Raises RuntimeError if the interpolation wasn't performed yet.
-            raise RuntimeError
+            raise RuntimeError("Interpolation wasn't performed yet.")
 
 
 class Phi(iQISTResponse):
@@ -645,27 +717,22 @@ class Phi(iQISTResponse):
 
     def load_from_file(self, nkp: int, fn="nonloc.phi.dat"):
         """ Function to load data written in iQIST format from a nonloc.phi.dat file."""
-        # Adding information about wave vector grid.
-        self.hs.nkp = nkp
-        # Wave-vector mesh on full Brillouin zone.
-        self.wv_mesh = np.linspace(-np.pi, np.pi,
-                                   self.hs.nkp*2+1, endpoint=True)
-        # Array of data points on imaginary axis with shape (nbfrq,2*nkp+1,2*nkp+1,nidx,nidx).
-        self.im_data = np.zeros(
-            (self.hs.nbfrq, 2*self.hs.nkp+1, 2*self.hs.nkp+1, 4, 4), dtype=complex)
+        im_data = np.zeros(
+            (2*nkp+1, 2*nkp+1, self.hs.nbfrq, 4, 4), dtype=complex)
         file = open(fn, 'r')
         for line in file:
             words = line.split()
             if words != [] and words[0] != '#':
                 k = int(words[0])-1
-                iqx = int(words[1])+self.hs.nkp
-                iqy = int(words[2])+self.hs.nkp
+                iqx = int(words[1])+nkp
+                iqy = int(words[2])+nkp
                 n = int(words[3])-1
                 m = int(words[4])-1
                 re = float(words[5])
                 im = float(words[6])
-                self.im_data[k, iqx, iqy, n, m] = complex(re, im)
+                im_data[iqx, iqy, k, n, m] = complex(re, im)
         file.close()
+        self.load_from_array(im_data)
 
     def get_eigenvalues(self, k: int, qx, qy):
         """ Method to return eigenvalues of the [I - \phi \hat{U}] matrix as function of
@@ -676,7 +743,8 @@ class Phi(iQISTResponse):
             U_matrix = np.zeros((4, 4))
             U_matrix[0, 3] = U_matrix[3, 0] = -self.hs.U
             U_matrix[1, 1] = U_matrix[2, 2] = +self.hs.U
-            tmp_matrix = np.identity(4) - np.matmul(self(k, qx, qy), U_matrix)
+            tmp_matrix = np.identity(
+                4) - np.matmul(self(v2d(qx, qy), k), U_matrix)
             evs = lg.eigvals(tmp_matrix)
             return np.sort(evs)
         else:
@@ -703,7 +771,7 @@ class Phi(iQISTResponse):
         else:
             raise RuntimeError
 
-    def compute_chi(self, nkp, regularization=FLOATZERO,verbose="False"):
+    def compute_chi(self, nkp, regularization=FLOATZERO, verbose="False"):
         """Method to compute the susceptibility chi from phi with regularization and for an updated value of nkp.
 
         Args:
@@ -723,7 +791,7 @@ class Phi(iQISTResponse):
             U_matrix[1, 1] = U_matrix[2, 2] = +self.hs.U
             new_wv_mesh = np.linspace(-np.pi, np.pi, 2*nkp+1, endpoint=True)
             chi_mesh = np.zeros(
-                (self.hs.nbfrq, 2*nkp+1, 2*nkp+1, 4, 4), dtype=complex)
+                (2*nkp+1, 2*nkp+1, self.hs.nbfrq, 4, 4), dtype=complex)
             for k in range(self.hs.nbfrq):
                 if verbose:
                     print("k = ", k)
@@ -731,11 +799,125 @@ class Phi(iQISTResponse):
                     for iqy in range(2*nkp+1):
                         qx = new_wv_mesh[iqx]
                         qy = new_wv_mesh[iqy]
-                        chi_mesh[k, iqx, iqy, :, :] = np.matmul(lg.inv(np.identity(4)*(1+regularization)
-                                                                       - np.matmul(self(k, qx, qy), U_matrix)), self(k, qx, qy))
+                        chi_mesh[iqx, iqy, k, :, :] = np.matmul(lg.inv(np.identity(4)*(1+regularization)
+                                                                       - np.matmul(self(v2d(qx, qy), k), U_matrix)), self(v2d(qx, qy), k))
             return new_wv_mesh, chi_mesh
         else:
             raise RuntimeError
+
+
+class SingularPart(iQISTResponse):
+    def __init__(self, hs: HubbardSystem):
+        super().__init__(hs)
+        self.U_matrix = np.zeros((4, 4))
+        self.U_matrix[0, 3] = self.U_matrix[3, 0] = -self.hs.U
+        self.U_matrix[1, 1] = self.U_matrix[2, 2] = +self.hs.U
+
+    def compute_from_phi(self, phi: iQISTResponse):
+        raise NotImplementedError
+
+    def get_eigenvalues(self, q: np.ndarray, k: int):
+        """ Method to return eigenvalues of the self matrix as function of
+        k: bosonic imaginary frequency index;
+        q: wave vector.
+        It returns sorted vector of the shape (4,). """
+        if self.interpolated:
+            tmp_matrix = self(q, k)
+            evs = lg.eigvals(tmp_matrix)
+            return np.sort(evs)
+        else:
+            raise RuntimeError
+
+    def get_mineigenvalue(self, q: np.ndarray, k: int):
+        return np.real(self.get_eigenvalues(q, k)[0])
+
+    def find_local_min_eigenvalue(self, k: int, initial_value: np.ndarray):
+        """ Method to find the wave vector where the smallest eigenvalue becomes minimal.
+        returns: min_wv - wave vector, where the smallest eigenvalue becomes minimal;
+                 min_eigen_value - local minimal value of real smallest eigenvalue."""
+        if self.interpolated:
+            minres = opt.minimize(lambda q: self.get_mineigenvalue(
+                q, k), initial_value, method="Nelder-Mead")
+            if minres.success:
+                min_wv = minres.x
+                min_eigen_value = self.get_eigenvalues(min_wv, k)[0]
+                if np.imag(min_eigen_value) < FLOATZERO:
+                    return min_wv, np.real(min_eigen_value)
+                else:
+                    raise RuntimeError(
+                        "Imaginary part of the smallest eigen value is not zero.")
+            else:
+                raise RuntimeError(
+                    "Optimization did not succeeded."+str(minres))
+        else:
+            raise RuntimeError("Interpolation was not performed.")
+
+    def get_regularized_inverse(self, regularization):
+        inverse_data = self.im_data + np.identity(4)*regularization
+        for k in range(self.hs.nbfrq):
+            for iqx in range(2*self.nkp+1):
+                for iqy in range(2*self.nkp+1):
+                    inverse_data[iqx, iqy, k, :, :] = lg.inv(
+                        inverse_data[iqx, iqy, k, :, :])
+        regularizaed_inverse = iQISTResponse(self.hs)
+        regularizaed_inverse.load_from_array(inverse_data)
+        return regularizaed_inverse
+
+
+class SingularPartLeft(SingularPart):
+    def compute_from_phi(self, phi: iQISTResponse):
+        self.nkp = phi.nkp
+        self.wv_mesh = phi.wv_mesh.copy()
+        self.im_data = phi.im_data.copy()
+        for k in range(self.hs.nbfrq):
+            for iqx in range(2*self.nkp+1):
+                for iqy in range(2*self.nkp+1):
+                    self.im_data[iqx, iqy, k, :, :] = np.identity(
+                        4) - np.matmul(self.im_data[iqx, iqy, k, :, :], self.U_matrix)
+
+
+class SingularPartRight(SingularPart):
+    def compute_from_phi(self, phi: iQISTResponse):
+        self.nkp = phi.nkp
+        self.wv_mesh = phi.wv_mesh.copy()
+        self.im_data = phi.im_data.copy()
+        for k in range(self.hs.nbfrq):
+            for iqx in range(2*self.nkp+1):
+                for iqy in range(2*self.nkp+1):
+                    self.im_data[iqx, iqy, k, :, :] = np.identity(
+                        4) - np.matmul(self.U_matrix, self.im_data[iqx, iqy, k, :, :])
+
+
+class iQISTResponseSpinRepr(iQISTResponse):
+    def __init__(self, respons: iQISTResponse):
+        super().__init__(respons.hs)
+        self.load_from_array(respons.im_data)
+        # Just the definition of Pauli matrices multiplied by factor 2.
+        sigma_x = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=complex)
+        sigma_y = np.array([[0.0, -1j], [1j, 0.0]], dtype=complex)
+        sigma_z = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=complex)
+        self.Sigma = [sigma_x, sigma_y, sigma_z]
+        # Matrices to pass from default basis to spin basis.
+        self.TR = np.zeros((4, 3), dtype=complex)
+        self.TL = np.zeros((3, 4), dtype=complex)
+        for m in range(3):
+            for sigma1 in range(2):
+                for sigma2 in range(2):
+                    alpha = 2*sigma1+sigma2
+                    self.TR[alpha, m] = self.Sigma[m][sigma1, sigma2]
+                    self.TL[m, alpha] = self.Sigma[m][sigma2, sigma1]
+        self.spin_im_data = np.zeros(
+            self.im_data.shape[:-2]+(3, 3), dtype=complex)
+        for k in range(self.hs.nbfrq):
+            for iqx in range(self.nkp*2+1):
+                for iqy in range(self.nkp*2+1):
+                    self.spin_im_data[iqx, iqy, k, :,
+                                      :] = self.TL @ self.im_data[iqx, iqy, k, :, :] @ self.TR
+
+    def __call__(self, q: np.ndarray, k: int):
+        result = super().__call__(q, k)
+        result = self.TL @ result @ self.TR
+        return result
 
 
 class Chi(iQISTResponse):
@@ -750,15 +932,14 @@ class Chi(iQISTResponse):
         self.Sigma = [sigma_x, sigma_y, sigma_z]
         self.continued = False
         # Matrices to pass from default basis to spin basis.
-        self.TR = np.zeros((4,3),dtype=complex)
-        self.TL = np.zeros((3,4),dtype=complex)
+        self.TR = np.zeros((4, 3), dtype=complex)
+        self.TL = np.zeros((3, 4), dtype=complex)
         for m in range(3):
             for sigma1 in range(2):
                 for sigma2 in range(2):
                     alpha = 2*sigma1+sigma2
-                    self.TR[alpha,m] = self.Sigma[m][sigma1,sigma2]
-                    self.TL[m,alpha] = self.Sigma[m][sigma2,sigma1]
-
+                    self.TR[alpha, m] = self.Sigma[m][sigma1, sigma2]
+                    self.TL[m, alpha] = self.Sigma[m][sigma2, sigma1]
 
     def __call__(self, k: int, qx_i, qy_i, representation="spin"):
         # Application of periodicity condition.
@@ -774,16 +955,8 @@ class Chi(iQISTResponse):
             if representation == "default":
                 return tmp_matrix_default
             else:
-                tmp_matrix_spin = np.matmul(np.matmul(self.TL,tmp_matrix_default),self.TR)
-                # tmp_matrix_spin = np.zeros((3, 3), dtype=complex)
-                # for m in range(3):
-                    # for n in range(3):
-                        # for sigma1 in range(2):
-                            # for sigma2 in range(2):
-                                # for sigma3 in range(2):
-                                    # for sigma4 in range(2):
-                                        # tmp_matrix_spin[m, n] += self.Sigma[m][sigma3, sigma4]*self.Sigma[n][sigma2, sigma1]*(
-                                            # tmp_matrix_default[sigma1*2+sigma2, sigma3*2+sigma4])
+                tmp_matrix_spin = np.matmul(
+                    np.matmul(self.TL, tmp_matrix_default), self.TR)
                 if representation == "spin":
                     return tmp_matrix_spin
                 elif representation == "rotational":
@@ -879,6 +1052,7 @@ class Chi(iQISTResponse):
         else:
             raise RuntimeError(
                 "Analytic continuation was not yet performed.")
+
 
 if __name__ == "__main__":
     print("Imports fine.")
