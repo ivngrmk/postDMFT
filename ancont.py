@@ -10,7 +10,7 @@ def ancont(X, Y, Na, Nb, X_out, N_it=1, ores=False):
         Коэффициент при z^{N_b} в знаменателе фиксирован и положен b_{N_b} = 1.
         Затухание на бесконечности обеспечивается при N_b >= N_a .
         Число степеней свободы: N_a (числитель) + N_B (знаменатель).
-        
+
     Args:
         X (_type_): _description_
         Y (_type_): _description_
@@ -135,7 +135,8 @@ def ancont_asmp(X_in, Y_in, s, N_in, X_out, N_it=0):
         N_it (int, optional): Число итераций, используемых в получении МНК решения. Defaults to 0.
     """
     if N_it != 0:
-        raise NotImplementedError
+        print("WARNING!!! Not checked.")
+
     def pade(a, b, x):
         num = 0.0
         for i in range(len(a)):

@@ -627,6 +627,14 @@ class iQISTResponse():
             new_response = iQISTResponse(self.hs)
             new_response.load_from_array(self.im_data + other_response.im_data)
             return new_response
+        
+    def __sub__(self, other_response: Self):
+        if self.im_data.shape != other_response.im_data.shape:
+            raise TypeError("Shapes of summands are incompetible.")
+        else:
+            new_response = iQISTResponse(self.hs)
+            new_response.load_from_array(self.im_data - other_response.im_data)
+            return new_response
 
     def __matmul__(self, other_response: Self):
         """
@@ -861,6 +869,7 @@ class SingularPart(iQISTResponse):
                         inverse_data[iqx, iqy, k, :, :])
         regularizaed_inverse = iQISTResponse(self.hs)
         regularizaed_inverse.load_from_array(inverse_data)
+        self.regularization = regularization
         return regularizaed_inverse
 
 
@@ -921,25 +930,57 @@ class iQISTResponseSpinRepr(iQISTResponse):
 
 
 class Chi(iQISTResponse):
-    """ Class to represent lattice susceptibility chi function, including its analytic continuation to the real frequency axis."""
+    """
+    Class to represent lattice susceptibility chi function, including its analytic continuation to the real frequency axis.
+    
+    Attributes
+    ----------
+    TR : ndarray
+        Right matrix for transofrmation to spin representation.
+    TL : ndarray
+        Left matrix for transformation to spin representation.
+    Sigma : list
+        List of 4 Pauli matrices devided by factor of 2.
+    continued : bool
+        Flag which stores information if the analytic continuation was performed.
+    im_data_spin : ndarray
+        Complex values of the response function in spin representation. It's shape is (2*nkp+1,2*nkp+1,hs.nbfrq,3,3).
+    """
 
     def __init__(self, hs: HubbardSystem):
         super().__init__(hs)
-        # Just the definition of Pauli matrices multiplied by factor 2.
-        sigma_x = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=complex)
-        sigma_y = np.array([[0.0, -1j], [1j, 0.0]], dtype=complex)
-        sigma_z = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=complex)
-        self.Sigma = [sigma_x, sigma_y, sigma_z]
+        sigma_x = 0.5*np.array([[0.0, 1.0], [1.0,  0.0]], dtype=complex)
+        sigma_y = 0.5*np.array([[0.0, -1j], [ 1j,  0.0]], dtype=complex)
+        sigma_z = 0.5*np.array([[1.0, 0.0], [0.0, -1.0]], dtype=complex)
+        sigma_0 = 0.5*np.array([[1.0, 0.0], [0.0,  1.0]], dtype=complex)
+        self.Sigma = [sigma_x, sigma_y, sigma_z, sigma_0]
         self.continued = False
         # Matrices to pass from default basis to spin basis.
-        self.TR = np.zeros((4, 3), dtype=complex)
-        self.TL = np.zeros((3, 4), dtype=complex)
-        for m in range(3):
+        self.TR = np.zeros((4, 4), dtype=complex)
+        self.TL = np.zeros((4, 4), dtype=complex)
+        for m in range(4):
             for sigma1 in range(2):
                 for sigma2 in range(2):
                     alpha = 2*sigma1+sigma2
-                    self.TR[alpha, m] = self.Sigma[m][sigma1, sigma2]
                     self.TL[m, alpha] = self.Sigma[m][sigma2, sigma1]
+                    self.TR[alpha, m] = self.Sigma[m][sigma1, sigma2]
+
+    
+    def get_spin_data(self) -> np.ndarray:
+        temp = self.im_data.copy()
+        shape = list(temp.shape)
+        # shape[-2] = 4
+        # shape[-1] = 4 
+        temp_spin = np.zeros(shape,dtype=complex)
+        for iqx in range(self.nkp*2+1):
+            for iqy in range(self.nkp*2+1):
+                for k in range(self.hs.nbfrq):
+                    temp_spin[iqx,iqy,k,:,:] = self.TL @ temp[iqx,iqy,k,:,:] @ self.TR
+        self.im_data_spin = temp_spin
+
+    def load_from_array(self, data: np.ndarray):
+        super().load_from_array(data)
+        self.get_spin_data()
 
     def __call__(self, k: int, qx_i, qy_i, representation="spin"):
         # Application of periodicity condition.
@@ -997,6 +1038,7 @@ class Chi(iQISTResponse):
                                                 Defaults to None (сonstant spectral density).
         """
         for iq, q in enumerate(self.continuation_wv_path.mesh):
+            print(f"{iq + 1} from {len(self.continuation_wv_path.mesh)}")
             im_data = np.zeros(self.hs.nbfrq, dtype=float)
             for k in range(self.hs.nbfrq):
                 im_data[k] = np.real(self(k, *q, representation="spin")
