@@ -4,9 +4,9 @@ from IPython.utils import io
 from scipy import interpolate
 from scipy import linalg as lg
 from scipy import optimize as opt
-from postDMFT.fourier import *
+# from fourier import *
 import copy
-from typing import Self
+# from typing import Self
 
 FLOATZERO = 10**(-8)
 
@@ -620,7 +620,7 @@ class iQISTResponse():
         else:
             raise TypeError("Shape of loaded data structure is incompetible with the response function's shape.")
 
-    def __add__(self, other_response: Self):
+    def __add__(self, other_response):
         if self.im_data.shape != other_response.im_data.shape:
             raise TypeError("Shapes of summands are incompetible.")
         else:
@@ -628,7 +628,7 @@ class iQISTResponse():
             new_response.load_from_array(self.im_data + other_response.im_data)
             return new_response
         
-    def __sub__(self, other_response: Self):
+    def __sub__(self, other_response):
         if self.im_data.shape != other_response.im_data.shape:
             raise TypeError("Shapes of summands are incompetible.")
         else:
@@ -636,7 +636,7 @@ class iQISTResponse():
             new_response.load_from_array(self.im_data - other_response.im_data)
             return new_response
 
-    def __matmul__(self, other_response: Self):
+    def __matmul__(self, other_response):
         """
         Multiplication of iQISTResponse instances
         point-vise with respect to k-points and imaginary freuencies
@@ -981,6 +981,18 @@ class Chi(iQISTResponse):
     def load_from_array(self, data: np.ndarray):
         super().load_from_array(data)
         self.get_spin_data()
+
+    def __add__(self, other_response):
+        temp_data = super().__add__(other_response).im_data
+        temp_chi = Chi(self.hs)
+        temp_chi.load_from_array(temp_data)
+        return temp_chi
+
+    def __matmul__(self, other_response):
+        temp_data = super().__matmul__(other_response).im_data
+        temp_chi = Chi(self.hs)
+        temp_chi.load_from_array(temp_data)
+        return temp_chi
 
     def __call__(self, k: int, qx_i, qy_i, representation="spin"):
         # Application of periodicity condition.
