@@ -949,10 +949,10 @@ class Chi(iQISTResponse):
 
     def __init__(self, hs: HubbardSystem):
         super().__init__(hs)
-        sigma_x = 0.5*np.array([[0.0, 1.0], [1.0,  0.0]], dtype=complex)
-        sigma_y = 0.5*np.array([[0.0, -1j], [ 1j,  0.0]], dtype=complex)
-        sigma_z = 0.5*np.array([[1.0, 0.0], [0.0, -1.0]], dtype=complex)
-        sigma_0 = 0.5*np.array([[1.0, 0.0], [0.0,  1.0]], dtype=complex)
+        sigma_x = np.array([[0.0, 1.0], [1.0,  0.0]], dtype=complex)
+        sigma_y = np.array([[0.0, -1j], [ 1j,  0.0]], dtype=complex)
+        sigma_z = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=complex)
+        sigma_0 = np.array([[1.0, 0.0], [0.0,  1.0]], dtype=complex)
         self.Sigma = [sigma_x, sigma_y, sigma_z, sigma_0]
         self.continued = False
         # Matrices to pass from default basis to spin basis.
@@ -962,8 +962,8 @@ class Chi(iQISTResponse):
             for sigma1 in range(2):
                 for sigma2 in range(2):
                     alpha = 2*sigma1+sigma2
-                    self.TL[m, alpha] = self.Sigma[m][sigma2, sigma1]
-                    self.TR[alpha, m] = self.Sigma[m][sigma1, sigma2]
+                    self.TL[m, alpha] = self.Sigma[m][sigma1, sigma2]/2.0
+                    self.TR[alpha, m] = self.Sigma[m][sigma2, sigma1]/2.0
 
     
     def get_spin_data(self) -> np.ndarray:
@@ -1063,15 +1063,16 @@ class Chi(iQISTResponse):
                 model = model_function(self.continuation_re_mesh)
             model /= np.trapz(model, self.continuation_re_mesh)
             # Default value of error. May be should be passed as an argument.
-            err = im_data * 0.0001
+            err = im_data * 0.001
             try:
                 with io.capture_output():
                     solution, _ = probl.solve(
                         method='maxent_svd', alpha_determination='chi2kink', optimizer='newton', stdev=err, model=model)
                     self.continuation_re_data[iq,
                                               :] = solution.A_opt * self.continuation_re_mesh
-            except RuntimeError:
+            except:
                 print("Error at :", iq)
+                self.continuation_re_data[iq,:] = 0.0
         self.continued = True
 
     def get_dispersion(self, max_w=np.inf):
