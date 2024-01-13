@@ -4,9 +4,8 @@ from IPython.utils import io
 from scipy import interpolate
 from scipy import linalg as lg
 from scipy import optimize as opt
-# from fourier import *
-import copy
-# from typing import Self
+import h5py
+import scipy
 
 FLOATZERO = 10**(-8)
 
@@ -35,6 +34,35 @@ def index2spin(m):
     if m == 2:
         return 'z'
     raise TypeError("Unrecognized number: " + str(m))
+
+
+def m2str(m):
+    if m == 0:
+        return "\\uparrow \\uparrow"
+    if m == 1:
+        return "\\uparrow \\downarrow"
+    if m == 2:
+        return "\\downarrow \\uparrow"
+    if m == 3:
+        return "\\downarrow \\downarrow"
+
+
+def m2spinstr(m):
+    if m == 0:
+        return "x"
+    if m == 1:
+        return "y"
+    if m == 2:
+        return "z"
+    if m == 3 or m == -1:
+        return "0"
+
+
+def sigma2str(sigma):
+    if sigma == 0:
+        return "\\uparrow"
+    if sigma == 1:
+        return "\\downarrow"
 
 
 def v2d(vx, vy):
@@ -294,28 +322,28 @@ class HubbardSystem():
         """ Method to print all saved parameters and properties."""
         message = ""
         for value_key in self.saved_phys_prop:
-            message += f"{value_key}: {getattr(self,value_key)}; "
+            message += f"{value_key}: {getattr(self, value_key)}; "
         message += "\n"
         for value_key in self.saved_therm_prop:
-            message += f"{value_key}: {getattr(self,value_key):.4f}; "
+            message += f"{value_key}: {getattr(self, value_key):.4f}; "
         message += "\n"
         for value_key in self.saved_calc_prop:
-            message += f"{value_key}: {getattr(self,value_key)}; "
+            message += f"{value_key}: {getattr(self, value_key)}; "
         return message[:-1]
 
     def print_info(self):
         """ Method to print all saved parameters and properties."""
         message = ""
         for value_key in self.saved_phys_prop:
-            message += f"{value_key}: {getattr(self,value_key)}; "
+            message += f"{value_key}: {getattr(self, value_key)}; "
         print(message[:-1])
         message = ""
         for value_key in self.saved_therm_prop:
-            message += f"{value_key}: {getattr(self,value_key):.4f}; "
+            message += f"{value_key}: {getattr(self, value_key):.4f}; "
         print(message[:-1])
         message = ""
         for value_key in self.saved_calc_prop:
-            message += f"{value_key}: {getattr(self,value_key)}; "
+            message += f"{value_key}: {getattr(self, value_key)}; "
         print(message[:-1])
 
 
@@ -618,7 +646,8 @@ class iQISTResponse():
         if self.im_data.shape == data.shape:
             self.im_data = data.copy()
         else:
-            raise TypeError("Shape of loaded data structure is incompetible with the response function's shape.")
+            raise TypeError(
+                "Shape of loaded data structure is incompetible with the response function's shape.")
 
     def __add__(self, other_response):
         if self.im_data.shape != other_response.im_data.shape:
@@ -627,7 +656,7 @@ class iQISTResponse():
             new_response = iQISTResponse(self.hs)
             new_response.load_from_array(self.im_data + other_response.im_data)
             return new_response
-        
+
     def __sub__(self, other_response):
         if self.im_data.shape != other_response.im_data.shape:
             raise TypeError("Shapes of summands are incompetible.")
@@ -653,11 +682,11 @@ class iQISTResponse():
                         new_response.im_data[iqx, iqy, k, :, :] = np.matmul(
                             self.im_data[iqx, iqy, k, :, :], other_response.im_data[iqx, iqy, k, :, :])
             return new_response
-        
+
     def __neg__(self):
-            new_response = iQISTResponse(self.hs)
-            new_response.load_from_array(-self.im_data.copy())
-            return new_response
+        new_response = iQISTResponse(self.hs)
+        new_response.load_from_array(-self.im_data.copy())
+        return new_response
 
     def interpolate(self, verbose=False, method="RB", method_settings={"Nx": 5, "Ny": 5}):
         """ Method to create functions which interpolate response function on the Brillouin zone."""
@@ -743,7 +772,7 @@ class Phi(iQISTResponse):
         self.load_from_array(im_data)
 
     def get_eigenvalues(self, k: int, qx, qy):
-        """ Method to return eigenvalues of the [I - \phi \hat{U}] matrix as function of
+        """ Method to return eigenvalues of the [I - \\phi \\hat{U}] matrix as function of
         k: bosonic imaginary frequency index;
         qx and qy: wave vector components.
         It returns sorted vector of the shape (4,). """
@@ -932,7 +961,7 @@ class iQISTResponseSpinRepr(iQISTResponse):
 class Chi(iQISTResponse):
     """
     Class to represent lattice susceptibility chi function, including its analytic continuation to the real frequency axis.
-    
+
     Attributes
     ----------
     TR : ndarray
@@ -950,7 +979,7 @@ class Chi(iQISTResponse):
     def __init__(self, hs: HubbardSystem):
         super().__init__(hs)
         sigma_x = np.array([[0.0, 1.0], [1.0,  0.0]], dtype=complex)
-        sigma_y = np.array([[0.0, -1j], [ 1j,  0.0]], dtype=complex)
+        sigma_y = np.array([[0.0, -1j], [1j,  0.0]], dtype=complex)
         sigma_z = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=complex)
         sigma_0 = np.array([[1.0, 0.0], [0.0,  1.0]], dtype=complex)
         self.Sigma = [sigma_x, sigma_y, sigma_z, sigma_0]
@@ -965,17 +994,17 @@ class Chi(iQISTResponse):
                     self.TL[m, alpha] = self.Sigma[m][sigma1, sigma2]/2.0
                     self.TR[alpha, m] = self.Sigma[m][sigma2, sigma1]/2.0
 
-    
     def get_spin_data(self) -> np.ndarray:
         temp = self.im_data.copy()
         shape = list(temp.shape)
         # shape[-2] = 4
-        # shape[-1] = 4 
-        temp_spin = np.zeros(shape,dtype=complex)
+        # shape[-1] = 4
+        temp_spin = np.zeros(shape, dtype=complex)
         for iqx in range(self.nkp*2+1):
             for iqy in range(self.nkp*2+1):
                 for k in range(self.hs.nbfrq):
-                    temp_spin[iqx,iqy,k,:,:] = self.TL @ temp[iqx,iqy,k,:,:] @ self.TR
+                    temp_spin[iqx, iqy, k, :,
+                              :] = self.TL @ temp[iqx, iqy, k, :, :] @ self.TR
         self.im_data_spin = temp_spin
 
     def load_from_array(self, data: np.ndarray):
@@ -1072,7 +1101,7 @@ class Chi(iQISTResponse):
                                               :] = solution.A_opt * self.continuation_re_mesh
             except:
                 print("Error at :", iq)
-                self.continuation_re_data[iq,:] = 0.0
+                self.continuation_re_data[iq, :] = 0.0
         self.continued = True
 
     def get_dispersion(self, max_w=np.inf):
@@ -1107,6 +1136,105 @@ class Chi(iQISTResponse):
         else:
             raise RuntimeError(
                 "Analytic continuation was not yet performed.")
+
+
+class Calculation():
+    def __init__(self, h5fn, bfsym=False):
+        self.__get_params(h5fn)
+
+        system = HubbardSystem()
+        system.nkp = self.params["nkp"]
+        system.beta = self.params["beta"]
+        system.U = self.params["U"]
+        self.hsystem = system
+        if bfsym:
+            system.nbfrq = 2*self.params["nbfrq"]-1
+            self.bfreqs = (np.arange(
+                2*self.params["nbfrq"]-1) - self.params["nbfrq"] + 1)*2*np.pi/self.params["beta"]
+        else:
+            system.nbfrq = self.params["nbfrq"]
+            self.bfreqs = np.arange(
+                self.params["nbfrq"])*2*np.pi/self.params["beta"]
+
+        self.chi0 = Chi(system)
+        with h5py.File(h5fn, 'r') as f:
+            chi0_data = np.array(f["chi0_closed_real"]).T + \
+                np.array(f["chi0_closed_imag"]).T*1j
+        self.chi0.load_from_array(chi0_data)
+
+        self.inv_chi0 = Chi(system)
+        inv_chi0_data = np.empty_like(self.chi0.im_data)
+        nkp_x, nkp_y, full_nbfrq = self.chi0.im_data.shape[:3]
+        for iqx in range(nkp_x):
+            for iqy in range(nkp_y):
+                for k in range(full_nbfrq):
+                    inv_chi0_data[iqx, iqy, k, :, :] = scipy.linalg.inv(
+                        self.chi0.im_data[iqx, iqy, k, :, :])
+        self.inv_chi0.load_from_array(inv_chi0_data)
+
+        with h5py.File(h5fn, 'r') as f:
+            phi_data = np.array(f["phi_real"]).T + np.array(f["phi_imag"]).T*1j
+
+        self.phi = Chi(system)
+        self.phi.load_from_array(phi_data)
+
+        singular_part_right = SingularPartRight(system)
+        singular_part_right.compute_from_phi(self.phi)
+        inverse_singular_part_right = singular_part_right.get_regularized_inverse(
+            0.0)
+
+        self.chi = Chi(system)
+        self.chi.load_from_array(
+            (self.phi @ inverse_singular_part_right).im_data)
+
+        self.inv_chi = Chi(system)
+        inv_chi_data = np.empty_like(self.chi.im_data)
+        nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
+        for iqx in range(nkp_x):
+            for iqy in range(nkp_y):
+                for k in range(full_nbfrq):
+                    inv_chi_data[iqx, iqy, k, :, :] = scipy.linalg.inv(
+                        self.chi.im_data[iqx, iqy, k, :, :])
+        self.inv_chi.load_from_array(inv_chi_data)
+
+        self.U_matrix = np.zeros((4, 4))
+        self.U_matrix[0, -1] = -self.params["U"]
+        self.U_matrix[-1, 0] = -self.params["U"]
+        self.U_matrix[1, 1] = self.params["U"]
+        self.U_matrix[2, 2] = self.params["U"]
+
+        self.extended_U_matrix = Chi(system)
+        extended_U_matrix_data = np.empty_like(self.chi.im_data)
+        nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
+        for iqx in range(nkp_x):
+            for iqy in range(nkp_y):
+                for k in range(full_nbfrq):
+                    extended_U_matrix_data[iqx, iqy, k, :, :] = self.U_matrix
+        self.extended_U_matrix.load_from_array(extended_U_matrix_data)
+
+    def __get_params(self, h5fn):
+        params = {}
+        with h5py.File(h5fn, 'r') as f:
+            attrs = f.attrs
+            nffrq = attrs["nffrq"][0]
+            nbfrq = attrs["nbfrq"][0]
+            beta = attrs["beta"][0]
+            U = attrs["U"][0]
+            nup = attrs["n_up"][0]
+            ndn = attrs["n_dn"][0]
+            sz = (nup - ndn)/2.0
+            chi0_data = np.array(f["chi0_closed_real"]).T + \
+                np.array(f["chi0_closed_imag"]).T*1j
+            nkp = (chi0_data.shape[0]-1) // 2
+        params["nffrq"] = nffrq
+        params["nbfrq"] = nbfrq
+        params["beta"] = beta
+        params["U"] = U
+        params["nup"] = nup
+        params["ndn"] = ndn
+        params["sz"] = sz
+        params["nkp"] = nkp
+        self.params = params
 
 
 if __name__ == "__main__":
