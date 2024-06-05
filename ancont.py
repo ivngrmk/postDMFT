@@ -114,7 +114,7 @@ def ancont(X, Y, Na, Nb, X_out, N_it=1, ores=False):
         for m in range(Np):
             res += abs(pade(a, b, X[m])-Y[m])
         res /= Np
-        return Y_out, res
+        return Y_out, a, b
     else:
         return Y_out
 
@@ -235,4 +235,4 @@ def ancont_asmp(X_in, Y_in, s, N_in, X_out, N_it=0):
     Y_out = np.zeros(len(X_out), dtype=complex)
     for i, x in enumerate(X_out):
         Y_out[i] = pade(a, b, x)
-    return Y_out
+    return Y_out, a, b

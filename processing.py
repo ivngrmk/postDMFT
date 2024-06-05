@@ -8,6 +8,9 @@ import h5py
 import scipy
 import types
 import copy
+from numpy.polynomial.polynomial import Polynomial
+from numpy.polynomial.polynomial import polydiv
+from scipy.stats import norm
 
 FLOATZERO = 10**(-8)
 
@@ -653,7 +656,7 @@ class iQISTResponse():
             self.im_data = data.copy()
         else:
             raise TypeError(
-                "Shape of loaded data structure is incompetible with the response function's shape.")
+                f"Shape of loaded data structure is incompetible with the response function's shape, data shape is {data.shape}.")
 
     def __add__(self, other_response):
         if self.im_data.shape != other_response.im_data.shape:
@@ -1157,6 +1160,7 @@ class Calculation():
         "inv_chi0" : False,
         "U_matrix" : False,
         "inv_phi" : False,
+        "Exclude w_n=0 jump from phi": False,
     }
 
     def __init__(self, h5fn, new_calc_rules = {}):
@@ -1212,6 +1216,25 @@ class Calculation():
 
         with h5py.File(h5fn, 'r') as f:
             phi_data = np.array(f["phi_real"]).T + np.array(f["phi_imag"]).T*1j
+
+        if calc_rules["Exclude w_n=0 jump from phi"]:
+            for iqx in range(2*self.params["nkp"]+1):
+                for iqy in range(2*self.params["nkp"]+1):
+                    for m in range(4):
+                        for n in range(4):
+                            nfitp = 4
+                            if np.max(abs(np.real(phi_data[iqx,iqy,:,m,n]))) > 10**(-2):
+                                datax = self.bfreqs[self.zero_bfreq+1:]
+                                datay = np.real(phi_data[iqx,iqy,self.zero_bfreq+1:,m,n])
+                                def fit_f(wn,A,B,C,D,F):
+                                    return (B + A*wn**2 + D*wn**4)/(1.0 + C*wn**2 + F*wn**4)
+                                popt,_ = scipy.optimize.curve_fit(fit_f,datax,datay,[0.0, datay[0]*10.0, 0.0, datay[-1]*0.5, 1.0])
+                                fit_function = np.vectorize(lambda wn: fit_f(wn,*popt))
+                                # p = np.polyfit(datax,datay,4)
+                                phi_data[iqx,iqy,self.zero_bfreq,m,n] = fit_function(0.0) + 1j*np.imag(phi_data[iqx,iqy,self.zero_bfreq,m,n])
+                            # if np.max(abs(np.imag(phi_data[iqx,iqy,:,m,n]))) > 10**(-2):
+                                # p = np.polyfit(self.bfreqs[self.zero_bfreq+1:self.zero_bfreq+nfitp+2],np.imag(phi_data[iqx,iqy,self.zero_bfreq+1:self.zero_bfreq+nfitp+2,m,n]),4)
+                                # phi_data[iqx,iqy,self.zero_bfreq,m,n] = np.real(phi_data[iqx,iqy,self.zero_bfreq,m,n]) + 1j*np.polyval(p,0.0)
 
         self.phi = Chi(system)
         self.phi.load_from_array(phi_data)
@@ -1276,28 +1299,31 @@ class Calculation():
                         extended_U_matrix_data[iqx, iqy, k, :, :] = self.U_matrix
             self.extended_U_matrix.load_from_array(extended_U_matrix_data)
 
-    def recalculate_chi(self):
-        if not self.chi.interpolated:
-            raise RuntimeError
-        chi_data = np.empty_like(self.chi.im_data)
-        nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
-        for iqx in range(nkp_x):
-            for iqy in range(nkp_y):
-                for k in range(full_nbfrq):
-                    chi_data[iqx,iqy,k,:,:] = self.chi(k, self.kmesh[iqx], self.kmesh[iqy], representation="default")
-        self.chi.load_from_array(chi_data)
-        inv_chi_data = np.empty_like(self.chi.im_data)
-        nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
-        for iqx in range(nkp_x):
-            for iqy in range(nkp_y):
-                for k in range(full_nbfrq):
-                    try:
-                        inv_chi_data[iqx, iqy, k, :, :] = scipy.linalg.inv(self.chi.im_data[iqx, iqy, k, :, :])
-                    except scipy.linalg.LinAlgError as err:
-                        print(err, iqx,iqy,k)
-                        inv_chi_data[iqx, iqy, k, :, :] = np.zeros((4,4))
-        self.inv_chi.load_from_array(inv_chi_data)
-
+    def recalculate_chi(self,source="chi_call"):
+        if source == "chi_call":
+            if not self.chi.interpolated:
+                raise RuntimeError
+            chi_data = np.empty_like(self.chi.im_data)
+            nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
+            for iqx in range(nkp_x):
+                for iqy in range(nkp_y):
+                    for k in range(full_nbfrq):
+                        chi_data[iqx,iqy,k,:,:] = self.chi(k, self.kmesh[iqx], self.kmesh[iqy], representation="default")
+            self.chi.load_from_array(chi_data)
+            inv_chi_data = np.empty_like(self.chi.im_data)
+            nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
+            for iqx in range(nkp_x):
+                for iqy in range(nkp_y):
+                    for k in range(full_nbfrq):
+                        try:
+                            inv_chi_data[iqx, iqy, k, :, :] = scipy.linalg.inv(self.chi.im_data[iqx, iqy, k, :, :])
+                        except scipy.linalg.LinAlgError as err:
+                            print(err, iqx,iqy,k)
+                            inv_chi_data[iqx, iqy, k, :, :] = np.zeros((4,4))
+            self.inv_chi.load_from_array(inv_chi_data)
+        else:
+            raise ValueError("Wrong source parameter.")
+        
     def regularize_singular_parts(self, regularization):
         singular_part_right = SingularPartRight(self.hsystem)
         singular_part_right.compute_from_phi(self.phi)
@@ -1317,7 +1343,10 @@ class Calculation():
             nbfrq = attrs["nbfrq"][0]
             beta = attrs["beta"][0]
             U = attrs["U"][0]
-            symbf = attrs["symbf"][0] != 0
+            try:
+                symbf = attrs["symbf"][0] != 0
+            except:
+                pass
             nup = attrs["n_up"][0]
             ndn = attrs["n_dn"][0]
             sz = (nup - ndn)/2.0
@@ -1339,9 +1368,61 @@ class Calculation():
         params["x"] = x
         params["nkp"] = nkp
         params["Q"] = Q
-        params["symbf"] = symbf
+        try:
+            params["symbf"] = symbf
+        except:
+            params["symbf"] = None
         self.params = params
 
+class PadeApproximant():
+    """ Class for a real-valued Pade Approximant.
+    """
+    def __init__(self, n, m):
+        self.n = n
+        self.m = m
+        self.num = Polynomial([0.0*1j,] * (n + 1))
+        self.den = Polynomial([0.0*1j,] * m)
+        self.den.coef[-1] = 1.0
+
+    def fit_data(self,X,Y,x0=None):
+        def fit_f(x,parameters):
+            num = Polynomial(parameters[:self.n+1])
+            if len(parameters) == self.n + self.m + 1:
+                den = Polynomial(list(parameters[self.n+1:]) + [1.0 + 0.0*1j])
+            else:
+                raise RuntimeError
+            return num(x) / den(x)
+        def loss_function(parameters):
+            loss = 0.0
+            for i,x in enumerate(X):
+                loss += abs(Y[i] - fit_f(x,parameters))**2
+            return loss
+        if not x0:
+            random_x0 = []
+            for _ in range(self.n + self.m + 1):
+                random_distr = norm(loc=0.0,scale=1.0)
+                random_x0.append(random_distr.rvs())
+            parameters_opt = scipy.optimize.minimize(loss_function, x0=random_x0)
+        else:
+            parameters_opt = scipy.optimize.minimize(loss_function, x0=x0)
+        self.num = Polynomial(parameters_opt.x[:self.n+1])
+        self.den = Polynomial(list(parameters_opt.x[self.n+1:]) + [1.0 + 0.0*1j])
+
+    def __call__(self,x):
+        return self.num(x) / self.den(x)
+
+    def polish(self,threshold=10**(-5)):
+        num_roots = self.num.roots()
+        den_roots = self.den.roots()
+        common_roots = []
+        for num_root in num_roots:
+            for den_root in den_roots:
+                if abs(num_root - den_root) < threshold:
+                    common_roots.append(den_root)
+        for common_root in common_roots:
+            monom = Polynomial([-common_root,1.0])
+            self.num = Polynomial(polydiv(self.num.coef,monom.coef)[0])
+            self.den = Polynomial(polydiv(self.den.coef,monom.coef)[0])
 
 if __name__ == "__main__":
     print("Imports fine.")
