@@ -714,10 +714,32 @@ class iQISTResponse():
                     if method == "fourier":
                         raise NotImplemented
                     elif method == "RB":
+                        # Extending array to imply periodic conditions on interpolation.
+                        dk = self.wv_mesh[1] - self.wv_mesh[0]
+                        wv_mesh_extended = np.array([self.wv_mesh[0] - dk,]+list(self.wv_mesh)+[self.wv_mesh[-1] + dk])
+                        im_data = self.im_data[:, :, kfreq, n, m]
+                        im_data_extended = np.zeros((np.array(im_data.shape) + 2),dtype=complex)
+                        for iqx,_ in enumerate(self.wv_mesh):
+                            im_data_extended[-1,iqx+1] = im_data[ 0+1,iqx]
+                            im_data_extended[ 0,iqx+1] = im_data[-1-1,iqx]
+                        for iqy,_ in enumerate(self.wv_mesh):
+                            im_data_extended[iqy+1,-1] = im_data[ 0+1,iqy]
+                            im_data_extended[iqy+1, 0] = im_data[-1-1,iqy]
+                        im_data_extended[-1, 0] = im_data[ 0+1,-1-1]
+                        im_data_extended[ 0,-1] = im_data[-1-1, 0+1]
+                        im_data_extended[-1,-1] = im_data[ 0+1, 0+1]
+                        im_data_extended[ 0, 0] = im_data[-1-1,-1-1]
+                        im_data_extended[1:-1,1:-1] = im_data
+
                         self.component_functions_re[kfreq, n, m] = interpolate.RectBivariateSpline(
-                            self.wv_mesh, self.wv_mesh, np.real(self.im_data[:, :, kfreq, n, m]), kx=method_settings["Nx"], ky=method_settings["Ny"])
+                            wv_mesh_extended, wv_mesh_extended, np.real(im_data_extended), kx=method_settings["Nx"], ky=method_settings["Ny"])
                         self.component_functions_im[kfreq, n, m] = interpolate.RectBivariateSpline(
-                            self.wv_mesh, self.wv_mesh, np.imag(self.im_data[:, :, kfreq, n, m]), kx=method_settings["Nx"], ky=method_settings["Ny"])
+                            wv_mesh_extended, wv_mesh_extended, np.imag(im_data_extended), kx=method_settings["Nx"], ky=method_settings["Ny"])
+
+                        # self.component_functions_re[kfreq, n, m] = interpolate.RectBivariateSpline(
+                            # self.wv_mesh, self.wv_mesh, np.real(self.im_data[:, :, kfreq, n, m]), kx=method_settings["Nx"], ky=method_settings["Ny"])
+                        # self.component_functions_im[kfreq, n, m] = interpolate.RectBivariateSpline(
+                            # self.wv_mesh, self.wv_mesh, np.imag(self.im_data[:, :, kfreq, n, m]), kx=method_settings["Nx"], ky=method_settings["Ny"])
             # Возможно стоит прикрутить вывод ошибки интерполяции для verbose = True.
 
     def refine_wv_mesh(self, new_nkp: int):
@@ -1158,28 +1180,36 @@ class Calculation():
     default_calc_rules = {
         "chi0" : False,
         "inv_chi0" : False,
-        "U_matrix" : False,
+        "phi" : True,
+        "Exclude_static_jump": False,
         "inv_phi" : False,
-        "Exclude w_n=0 jump from phi": False,
+        "U_matrix" : False,
+        "inv_chi" : False,
     }
 
     def __init__(self, h5fn, new_calc_rules = {}):
+        # Update default calc_rules with new_calc_rules.
         for key in new_calc_rules:
             if key not in self.default_calc_rules:
                 raise KeyError
         calc_rules = {**self.default_calc_rules, **new_calc_rules}
+        # Check if updated calc_rules are consistent.
         if calc_rules["inv_chi0"] and (not calc_rules["chi0"]):
-            raise KeyError
+            raise KeyError # One can not compute inv_chi0 without chi0.
+        if calc_rules["inv_phi"] and (not calc_rules["phi"]):
+            raise KeyError # One can not compute inv_phi without phi
+        if (not calc_rules["phi"]) and (not calc_rules["chi0"]):
+            raise KeyError # At least one of phi or chi0 should be loaded.
 
+        # Loading parameters.
         self.__get_params(h5fn)
         bfsym = self.params["symbf"]
-
         system = HubbardSystem()
         system.nkp = self.params["nkp"]
+        print(system.nkp)
         system.beta = self.params["beta"]
         system.U = self.params["U"]
         self.hsystem = system
-
         if bfsym:
             system.nbfrq = 2*self.params["nbfrq"]-1
             self.bfreqs = (np.arange(
@@ -1199,7 +1229,6 @@ class Calculation():
                 chi0_data = np.array(f["chi0_closed_real"]).T + \
                     np.array(f["chi0_closed_imag"]).T*1j
             self.chi0.load_from_array(chi0_data)
-
         if calc_rules["inv_chi0"]:
             self.inv_chi0 = Chi(system)
             inv_chi0_data = np.empty_like(self.chi0.im_data)
@@ -1214,29 +1243,28 @@ class Calculation():
                             inv_chi0_data[iqx, iqy, k, :, :] = np.zeros((4,4))
             self.inv_chi0.load_from_array(inv_chi0_data)
 
-        with h5py.File(h5fn, 'r') as f:
-            phi_data = np.array(f["phi_real"]).T + np.array(f["phi_imag"]).T*1j
+        self.phi = Chi(system)
+        if calc_rules["phi"]:
+            with h5py.File(h5fn, 'r') as f:
+                phi_data = np.array(f["phi_real"]).T + np.array(f["phi_imag"]).T*1j
+        else:
+            phi_data = self.chi0.im_data.copy()
 
-        if calc_rules["Exclude w_n=0 jump from phi"]:
+        if calc_rules["Exclude_static_jump"]:
             for iqx in range(2*self.params["nkp"]+1):
                 for iqy in range(2*self.params["nkp"]+1):
                     for m in range(4):
                         for n in range(4):
-                            nfitp = 4
-                            if np.max(abs(np.real(phi_data[iqx,iqy,:,m,n]))) > 10**(-2):
+                            if np.max(abs(np.real(phi_data[iqx,iqy,:,m,n]))) > 10**(-1):
                                 datax = self.bfreqs[self.zero_bfreq+1:]
                                 datay = np.real(phi_data[iqx,iqy,self.zero_bfreq+1:,m,n])
-                                def fit_f(wn,A,B,C,D,F):
-                                    return (B + A*wn**2 + D*wn**4)/(1.0 + C*wn**2 + F*wn**4)
-                                popt,_ = scipy.optimize.curve_fit(fit_f,datax,datay,[0.0, datay[0]*10.0, 0.0, datay[-1]*0.5, 1.0])
-                                fit_function = np.vectorize(lambda wn: fit_f(wn,*popt))
-                                # p = np.polyfit(datax,datay,4)
+                                p = np.polyfit(datax,1 / datay, 3)
+                                fit_function = np.vectorize(lambda wn: 1 / np.polyval(p,wn))
+                                # def fit_f(wn,A,B,C,D,F):
+                                    # return (B + A*wn**2 + D*wn**4)/(1.0 + C*wn**2 + F*wn**4)
+                                # popt,_ = scipy.optimize.curve_fit(fit_f,datax,datay,[0.0, datay[0]*10.0, 0.0, datay[-1]*0.5, 1.0])
+                                # fit_function = np.vectorize(lambda wn: fit_f(wn,*popt))
                                 phi_data[iqx,iqy,self.zero_bfreq,m,n] = fit_function(0.0) + 1j*np.imag(phi_data[iqx,iqy,self.zero_bfreq,m,n])
-                            # if np.max(abs(np.imag(phi_data[iqx,iqy,:,m,n]))) > 10**(-2):
-                                # p = np.polyfit(self.bfreqs[self.zero_bfreq+1:self.zero_bfreq+nfitp+2],np.imag(phi_data[iqx,iqy,self.zero_bfreq+1:self.zero_bfreq+nfitp+2,m,n]),4)
-                                # phi_data[iqx,iqy,self.zero_bfreq,m,n] = np.real(phi_data[iqx,iqy,self.zero_bfreq,m,n]) + 1j*np.polyval(p,0.0)
-
-        self.phi = Chi(system)
         self.phi.load_from_array(phi_data)
 
         if calc_rules["inv_phi"]:
@@ -1269,25 +1297,26 @@ class Calculation():
         self.chi = Chi(system)
         self.chi.load_from_array((self.phi @ inversed_singular_part_right).im_data)
 
+        if calc_rules["inv_chi"]:
+            self.inv_chi = Chi(system)
+            inv_chi_data = np.empty_like(self.chi.im_data)
+            nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
+            for iqx in range(nkp_x):
+                for iqy in range(nkp_y):
+                    for k in range(full_nbfrq):
+                        try:
+                            inv_chi_data[iqx, iqy, k, :3, :3] = scipy.linalg.inv(
+                                self.chi.im_data[iqx, iqy, k, :3, :3])
+                        except scipy.linalg.LinAlgError as err:
+                            print(err, iqx,iqy,k)
+                            inv_chi_data[iqx, iqy, k, :, :] = np.zeros((4,4))
+            self.inv_chi.load_from_array(inv_chi_data)
+
         self.U_matrix = np.zeros((4, 4))
         self.U_matrix[0, -1] = -self.params["U"]
         self.U_matrix[-1, 0] = -self.params["U"]
         self.U_matrix[1, 1] = self.params["U"]
         self.U_matrix[2, 2] = self.params["U"]
-
-        self.inv_chi = Chi(system)
-        inv_chi_data = np.empty_like(self.chi.im_data)
-        nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
-        for iqx in range(nkp_x):
-            for iqy in range(nkp_y):
-                for k in range(full_nbfrq):
-                    try:
-                        inv_chi_data[iqx, iqy, k, :3, :3] = scipy.linalg.inv(
-                            self.chi.im_data[iqx, iqy, k, :3, :3])
-                    except scipy.linalg.LinAlgError as err:
-                        print(err, iqx,iqy,k)
-                        inv_chi_data[iqx, iqy, k, :, :] = np.zeros((4,4))
-        self.inv_chi.load_from_array(inv_chi_data)
 
         if calc_rules["U_matrix"]:
             self.extended_U_matrix = Chi(system)
