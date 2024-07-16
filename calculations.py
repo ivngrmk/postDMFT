@@ -1,7 +1,7 @@
 import numpy as np
 import h5py
 import scipy.linalg
-from twoparticle import Chi, SingularPartRight, SingularPartLeft
+from twoparticle import Chi, SingularPartRight, SingularPartLeft, iQISTResponse, compute_chi_from_phi
 from kspace import v2d
 
 class HubbardSystem():
@@ -146,6 +146,7 @@ class Calculation():
         "inv_phi" : False,
         "U_matrix" : False,
         "inv_chi" : False,
+        "singular_parts": False,
     }
 
     def __init__(self, h5fn, new_calc_rules = {}):
@@ -165,33 +166,26 @@ class Calculation():
         # Loading parameters.
         self.__get_params(h5fn)
         bfsym = self.params["symbf"]
-        system = HubbardSystem()
-        system.nkp = self.params["nkp"]
-        print(system.nkp)
-        system.beta = self.params["beta"]
-        system.U = self.params["U"]
-        self.hsystem = system
         if bfsym:
-            system.nbfrq = 2*self.params["nbfrq"]-1
             self.bfreqs = (np.arange(
                 2*self.params["nbfrq"]-1) - self.params["nbfrq"] + 1)*2*np.pi/self.params["beta"]
             self.zero_bfreq = self.params["nbfrq"]-1
         else:
-            system.nbfrq = self.params["nbfrq"]
             self.bfreqs = np.arange(
                 self.params["nbfrq"])*2*np.pi/self.params["beta"]
             self.zero_bfreq = 0
         self.kmesh = np.linspace(-np.pi,np.pi,self.params["nkp"]*2+1,endpoint=True)
         self.zero_iq = self.params["nkp"]
 
+        #CHI0
         if calc_rules["chi0"]:
-            self.chi0 = Chi(system)
+            self.chi0 = Chi()
             with h5py.File(h5fn, 'r') as f:
                 chi0_data = np.array(f["chi0_closed_real"]).T + \
                     np.array(f["chi0_closed_imag"]).T*1j
             self.chi0.load_from_array(chi0_data)
         if calc_rules["inv_chi0"]:
-            self.inv_chi0 = Chi(system)
+            self.inv_chi0 = Chi()
             inv_chi0_data = np.empty_like(self.chi0.im_data)
             nkp_x, nkp_y, full_nbfrq = self.chi0.im_data.shape[:3]
             for iqx in range(nkp_x):
@@ -204,32 +198,18 @@ class Calculation():
                             inv_chi0_data[iqx, iqy, k, :, :] = np.zeros((4,4))
             self.inv_chi0.load_from_array(inv_chi0_data)
 
-        self.phi = Chi(system)
+        #PHI
+        self.phi = Chi()
         if calc_rules["phi"]:
             with h5py.File(h5fn, 'r') as f:
                 phi_data = np.array(f["phi_real"]).T + np.array(f["phi_imag"]).T*1j
         else:
             phi_data = self.chi0.im_data.copy()
-
         if calc_rules["Exclude_static_jump"]:
-            for iqx in range(2*self.params["nkp"]+1):
-                for iqy in range(2*self.params["nkp"]+1):
-                    for m in range(4):
-                        for n in range(4):
-                            if np.max(abs(np.real(phi_data[iqx,iqy,:,m,n]))) > 10**(-1):
-                                datax = self.bfreqs[self.zero_bfreq+1:]
-                                datay = np.real(phi_data[iqx,iqy,self.zero_bfreq+1:,m,n])
-                                p = np.polyfit(datax,1 / datay, 3)
-                                fit_function = np.vectorize(lambda wn: 1 / np.polyval(p,wn))
-                                # def fit_f(wn,A,B,C,D,F):
-                                    # return (B + A*wn**2 + D*wn**4)/(1.0 + C*wn**2 + F*wn**4)
-                                # popt,_ = scipy.optimize.curve_fit(fit_f,datax,datay,[0.0, datay[0]*10.0, 0.0, datay[-1]*0.5, 1.0])
-                                # fit_function = np.vectorize(lambda wn: fit_f(wn,*popt))
-                                phi_data[iqx,iqy,self.zero_bfreq,m,n] = fit_function(0.0) + 1j*np.imag(phi_data[iqx,iqy,self.zero_bfreq,m,n])
+            raise NotImplemented
         self.phi.load_from_array(phi_data)
-
         if calc_rules["inv_phi"]:
-            self.inv_phi = Chi(system)
+            self.inv_phi = Chi()
             inv_phi_data = np.empty_like(self.phi.im_data)
             nkp_x, nkp_y, full_nbfrq = self.phi.im_data.shape[:3]
             for iqx in range(nkp_x):
@@ -242,30 +222,17 @@ class Calculation():
                             inv_phi_data[iqx, iqy, k, :, :] = np.zeros((4,4))
             self.inv_phi.load_from_array(inv_phi_data)
 
-        singular_part_right = SingularPartRight(system)
-        singular_part_right.compute_from_phi(self.phi)
-        inversed_singular_part_right = singular_part_right.get_regularized_inverse(0.0)
-
-        self.inversed_singular_part = inversed_singular_part_right
-        self.inversed_singular_part_right = inversed_singular_part_right
-
-        singular_part_left = SingularPartLeft(system)
-        singular_part_left.compute_from_phi(self.phi)
-        inversed_singular_part_left = singular_part_left.get_regularized_inverse(0.0)
-
-        self.inversed_singular_part_left = inversed_singular_part_left
-
-        self.chi = Chi(system)
-        self.chi.load_from_array((self.phi @ inversed_singular_part_right).im_data)
-
+        #CHI
+        self.chi = compute_chi_from_phi(U_value = self.params["U"], phi = self.phi, regularization = 0.0)
         if calc_rules["inv_chi"]:
-            self.inv_chi = Chi(system)
+            self.inv_chi = Chi()
             inv_chi_data = np.empty_like(self.chi.im_data)
             nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
             for iqx in range(nkp_x):
                 for iqy in range(nkp_y):
                     for k in range(full_nbfrq):
                         try:
+                            print("The computed chi^-1 includes only X,Y,Z components.")
                             inv_chi_data[iqx, iqy, k, :3, :3] = scipy.linalg.inv(
                                 self.chi.im_data[iqx, iqy, k, :3, :3])
                         except scipy.linalg.LinAlgError as err:
@@ -273,14 +240,14 @@ class Calculation():
                             inv_chi_data[iqx, iqy, k, :, :] = np.zeros((4,4))
             self.inv_chi.load_from_array(inv_chi_data)
 
+        #U_MATRIX
         self.U_matrix = np.zeros((4, 4))
         self.U_matrix[0, -1] = -self.params["U"]
         self.U_matrix[-1, 0] = -self.params["U"]
         self.U_matrix[1, 1] = self.params["U"]
         self.U_matrix[2, 2] = self.params["U"]
-
         if calc_rules["U_matrix"]:
-            self.extended_U_matrix = Chi(system)
+            self.extended_U_matrix = Chi()
             extended_U_matrix_data = np.empty_like(self.chi.im_data)
             nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
             for iqx in range(nkp_x):
@@ -315,12 +282,12 @@ class Calculation():
             raise ValueError("Wrong source parameter.")
         
     def regularize_singular_parts(self, regularization):
-        singular_part_right = SingularPartRight(self.hsystem)
+        singular_part_right = SingularPartRight(U_value=self.params["U"])
         singular_part_right.compute_from_phi(self.phi)
         self.inversed_singular_part = singular_part_right.get_regularized_inverse(regularization)
         self.inversed_singular_part_right = singular_part_right.get_regularized_inverse(regularization)
 
-        singular_part_left = SingularPartLeft(self.hsystem)
+        singular_part_left = SingularPartLeft(U_value=self.params["U"])
         singular_part_left.compute_from_phi(self.phi)
         self.inversed_singular_part_left = singular_part_left.get_regularized_inverse(regularization)
 
