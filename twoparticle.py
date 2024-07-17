@@ -1,14 +1,11 @@
 import numpy as np
-from kspace import v2d
-from calculations import HubbardSystem
+from postDMFT.kspace import v2d, periodic, BZPath, vBZ
 from scipy import interpolate
 from scipy import optimize as opt
-from kspace import periodic
-from common import FLOATZERO
-from kspace import BZPath, vBZ
+from postDMFT.common import FLOATZERO
 import copy
 import scipy.linalg as lg
-from utils import spin2index
+from postDMFT.utils import spin2index
 import ana_cont.continuation as cont
 from IPython.utils import io
 
@@ -121,6 +118,24 @@ class iQISTResponse():
         new_response = iQISTResponse()
         new_response.load_from_array(-self.im_data.copy())
         return new_response
+    
+    def inv(self, regularization = 0.0):
+        if regularization < 0.0:
+            print("Regularizaiton is negative, setting regularization to 'zero'.")
+            regularization = FLOATZERO
+        inverse_data = self.im_data + np.identity(4)*regularization
+        for k in range(self.nbfrq):
+            for iqx in range(2*self.nkp+1):
+                for iqy in range(2*self.nkp+1):
+                    inverse_data[iqx, iqy, k, :, :] = lg.inv(inverse_data[iqx, iqy, k, :, :])
+        reginv = iQISTResponse()
+        reginv.load_from_array(inverse_data)
+        return reginv
+        
+    def get_regularized_inverse(self, regularization = 0.0):
+        # Old method name.
+        return self.inv(regularization=regularization)
+        
 
     def interpolate(self, verbose=False, method="RB", method_settings={"Nx": 5, "Ny": 5}):
         """ Method to create functions which interpolate response function on the Brillouin zone."""
@@ -193,10 +208,10 @@ class iQISTResponse():
         new_response.load_from_array(new_im_data)
         return new_response
 
-def compute_chi_from_phi(U_value: float, phi: iQISTResponse, regularization=FLOATZERO):
+def compute_chi_from_phi(U_value: float, phi: iQISTResponse, regularization=0.0):
         signular_part_left = SingularPartLeft(U_value=U_value)
         signular_part_left.compute_from_phi(phi=phi)
-        reginv = signular_part_left.get_eigenvalues(regularization=regularization)
+        reginv = signular_part_left.inv(regularization=regularization)
         return reginv @ phi
 
 class SingularPart(iQISTResponse):
@@ -209,55 +224,21 @@ class SingularPart(iQISTResponse):
     def compute_from_phi(self, phi: iQISTResponse):
         raise NotImplementedError
 
-    def get_eigenvalues(self, q: np.ndarray, k: int):
-        """ Method to return eigenvalues of the self matrix as function of
-        k: bosonic imaginary frequency index;
-        q: wave vector.
-        It returns sorted vector of the shape (4,). """
-        if self.interpolated:
-            tmp_matrix = self(q, k)
-            evs = lg.eigvals(tmp_matrix)
-            return np.sort(evs)
-        else:
-            raise RuntimeError
+    def get_eigenvalues(self):
+        eigenvalues = np.zeros((self.im_data.shape[:4]),dtype=complex)
+        for iqx in range(self.im_data.shape[0]):
+            for iqy in range(self.im_data.shape[1]):
+                for k in range(self.im_data.shape[2]):
+                    eigenvalues[iqx,iqy,k,:] = lg.eigvals(self.im_data[iqx,iqy,k,:,:])
+        return eigenvalues
 
-    def get_mineigenvalue(self, q: np.ndarray, k: int):
-        return np.real(self.get_eigenvalues(q, k)[0])
-
-    def find_local_min_eigenvalue(self, k: int, initial_value: np.ndarray):
-        """ Method to find the wave vector where the smallest eigenvalue becomes minimal.
-        returns: min_wv - wave vector, where the smallest eigenvalue becomes minimal;
-                 min_eigen_value - local minimal value of real smallest eigenvalue."""
-        if self.interpolated:
-            minres = opt.minimize(lambda q: self.get_mineigenvalue(
-                q, k), initial_value, method="Nelder-Mead")
-            if minres.success:
-                min_wv = minres.x
-                min_eigen_value = self.get_eigenvalues(min_wv, k)[0]
-                if np.imag(min_eigen_value) < FLOATZERO:
-                    return min_wv, np.real(min_eigen_value)
-                else:
-                    raise RuntimeError(
-                        "Imaginary part of the smallest eigen value is not zero.")
-            else:
-                raise RuntimeError(
-                    "Optimization did not succeeded."+str(minres))
-        else:
-            raise RuntimeError("Interpolation was not performed.")
-
-    def get_regularized_inverse(self, regularization: float):
-        if regularization < 0.0:
-            print("Regularizaiton is negative, setting regularization to 'zero'.")
-            regularization = FLOATZERO
-        inverse_data = self.im_data + np.identity(4)*regularization
-        for k in range(self.nbfrq):
-            for iqx in range(2*self.nkp+1):
-                for iqy in range(2*self.nkp+1):
-                    inverse_data[iqx, iqy, k, :, :] = lg.inv(inverse_data[iqx, iqy, k, :, :])
-        reginv = iQISTResponse()
-        reginv.load_from_array(inverse_data)
-        return reginv
-
+    def get_min_eigenvalues(self):
+        eigenvalues = self.get_eigenvalues()
+        min_eigenvalues = np.zeros((self.im_data.shape[:3]),dtype=float)
+        for iqx in range(self.im_data.shape[0]):
+            for iqy in range(self.im_data.shape[1]):
+                for k in range(self.im_data.shape[2]):
+                    min_eigenvalues[iqx,iqy,k] = np.min(np.real(eigenvalues[iqx,iqy,k,:]))
 
 class SingularPartLeft(SingularPart):
     def compute_from_phi(self, phi: iQISTResponse):
@@ -368,6 +349,17 @@ class Chi(iQISTResponse):
         temp_chi = Chi()
         temp_chi.load_from_array(temp_data)
         return temp_chi
+    
+    def inv(self, regularization=0.0):
+        inv_chi = Chi()
+        inv_chi.load_from_array(self.inv(regularization=regularization).im_data)
+
+    def refine_wv_mesh(self,new_nkp: int):
+        iqist_response = iQISTResponse()
+        iqist_response.load_from_array(self.im_data)
+        new_chi = Chi()
+        new_chi.load_from_array(iqist_response.refine_wv_mesh(new_nkp=new_nkp).im_data)
+        return new_chi
 
     # def interpolate(self, verbose=False, method="RB", method_settings={ "Nx": 5,"Ny": 5 }):
         # print(method)
