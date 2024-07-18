@@ -2,6 +2,65 @@ import numpy as np
 from numpy.polynomial.polynomial import Polynomial, polydiv
 from scipy.stats import norm as normal_distribution
 from scipy.optimize import minimize
+from postDMFT.common import FLOATZERO
+
+def list1d_to_dict(list1d: list,strings: list) -> dict:
+    """Convertes 1D list to a dictionary.
+
+    Args:
+        list1d (list): 1D list.
+        strings (list): List of symbols.
+
+    Raises:
+        RuntimeError: Is the size of list1d does not match the size of strings.
+
+    Returns:
+        dict: Dictionary with keys 'A', where A is a symbol from strings list.
+    """
+    if len(list1d) != len(strings):
+        raise RuntimeError(f"{len(list1d)},{len(strings)}")
+    else:
+        dictarray = {}
+        for array_idx, array in enumerate(list1d):
+            dictarray[strings[array_idx]] = array
+        return dictarray
+    
+def list2d_to_dict(list2d: list,strings: list) -> dict:
+    """Convertes nested square 2D list to a dictionary.
+
+    Args:
+        list2d (list): Nested square 2D list.
+        strings (list): List of symbols.
+
+    Raises:
+        RuntimeError: If the list2d list is not NxN or len(strings) != N.
+
+    Returns:
+        dict: Dictionary with keys 'AB', where A and B are symbols from strings list.
+    """
+    is_ok = True
+    is_ok = is_ok and (len(list2d) == len(strings))
+    for idx in range(len(list2d)):
+        is_ok = is_ok and (len(list2d[idx]) == len(strings))
+    if not is_ok:
+        raise RuntimeError
+    dictarray = {}
+    for i in range(len(strings)):
+        for j in range(len(strings)):
+            key = f"{strings[i]}{strings[j]}"
+            dictarray[key] = list2d[i][j]
+    return dictarray
+
+def remove_small_numbers(array,SMALL_NUMBER=FLOATZERO):
+    with np.nditer(array,op_flags=['readwrite']) as it:
+        for x in it:
+            xre = np.real(x)
+            xim = np.imag(x)
+            if abs(xre) < SMALL_NUMBER:
+                xre = 0.0
+            if abs(xim) < SMALL_NUMBER:
+                xim = 0.0
+            x[...] = complex(xre,xim)
 
 def get_diag(array_2d: np.ndarray):
     if (len(array_2d.shape) != 2 or array_2d.shape[0] != array_2d.shape[1]): raise RuntimeError

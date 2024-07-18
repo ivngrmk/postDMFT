@@ -3,6 +3,7 @@ import h5py
 import scipy.linalg
 from postDMFT.twoparticle import Chi, SingularPartRight, SingularPartLeft, iQISTResponse, compute_chi_from_phi
 from postDMFT.kspace import v2d
+from postDMFT.utils import list1d_to_dict, list2d_to_dict
 
 class HubbardSystem():
     """ Class to keep all information about particular calculation: its parameters and thermodynamic properties. """
@@ -297,3 +298,93 @@ class Calculation():
         except:
             params["symbf"] = None
         self.params = params
+
+def get_complex_data(h5f,data_name):
+    return (np.array(h5f[data_name+"_real"])+1j*np.array(h5f[data_name+"_imag"])).transpose()
+
+def LorR_to_list(array: np.ndarray) -> list:
+    """Convertes numpy array to a list each entity of which is a Chi object.
+
+    Args:
+        array (np.ndarray): Asumed to have a shape of (:,:,:,i,:,:), where i marks the axis along which this array is converted to a list.
+
+    Returns:
+        list: Has a shape of [i](:,:,:,:,:), where (:,:,:,:,:) is a Chi object.
+    """
+    if len(array.shape) != 6:
+        raise RuntimeError
+    n = array.shape[3]
+    listarray = [0]*n
+    for i in range(n):
+        data = array[:,:,:,i,:,:]
+        response = Chi()
+        response.load_from_array(data)
+        listarray[i] = response
+    return listarray
+    
+def LR_to_list(array: np.ndarray) -> list:
+    """Convertes numpy array to a nested 2D list each entity of which is a Chi object.
+
+    Args:
+        array (np.ndarray): Asumed to have a shape of (:,:,:,i,j,:,:), where i and j mark the axes along which this array is converted to a nested list.
+
+    Returns:
+        list: Has a shape of [i][j](:,:,:,:,:), where (:,:,:,:,:) is a Chi object.
+    """
+    if (len(array.shape) != 7) or (array.shape[3] != array.shape[4]):
+        raise RuntimeError
+    listarray = [[0,0,0],[0,0,0],[0,0,0]]
+    for i in range(3):
+        for j in range(3):
+            response = Chi()
+            response.load_from_array(array[:,:,:,i,j,:,:])
+            listarray[i][j] = response
+    return listarray
+
+def LorR_to_dict(array,strings):
+    listarray = LorR_to_list(array=array)
+    return list1d_to_dict(list1d=listarray,strings=strings)
+
+def LR_to_dict(array,strings):
+    listarray = LR_to_list(array=array)
+    return list2d_to_dict(list2d=listarray,strings=strings)
+
+# TODO: Каким-то образом ТЕКСТОМ описать текущее состояние дел на тему того, в каком виде токовые корреляторы записаны в hdf5 файлах,
+# как и в каком виде они загружаются в питоновские струкртуры данных.
+
+# All current-current correlation functions have two types of additional indecies. At the very end both are stored as 
+# Index type 1: Is a part of a numpy data structures in hdf5 files.
+
+# All current-current correlation functions are asumed to belong to one of the following classes.
+# Type 1: LorR class.
+#   It's members have one spect-time index \mu and one 'sign' index \alpha. It is assumed that \alpha\in{0,+,-}.
+
+def load_LorR(calc_fn, base_name, st_strings, vertex_strings, vertex_aux_strings = None, postfix = ""):
+    if vertex_aux_strings is None:
+        vertex_aux_strings = vertex_strings
+    bubble = {}
+    with h5py.File(calc_fn,'r') as calc_f:
+        for vertex_idx, vertex_string in enumerate(vertex_strings):
+            if vertex_string:
+                bubble_data = get_complex_data(calc_f,f"{base_name}{vertex_aux_strings[vertex_idx]}{postfix}")
+                bubble_dict = LorR_to_dict(bubble_data,st_strings)
+                for st_key in st_strings:
+                    bubble[f"{st_key},{vertex_string}"] = bubble_dict[st_key]
+    return bubble
+
+def load_LR(calc_fn, base_name, st_strings, vertex_strings, vertex_aux_strings = None, postfix = ""):
+    if vertex_aux_strings is None:
+        vertex_aux_strings = vertex_strings
+    bubble = {}
+    with h5py.File(calc_fn,'r') as calc_f:
+        for vertex_idx_l, vertex_string_l in enumerate(vertex_strings):
+            for vertex_idx_r, vertex_string_r in enumerate(vertex_strings):
+                if vertex_string_l and vertex_string_r:
+                    dataset_name = f"{base_name}{vertex_aux_strings[vertex_idx_l]}{vertex_aux_strings[vertex_idx_r]}{postfix}"
+                    bubble_data = get_complex_data(calc_f,dataset_name)
+                    bubble_dict = LR_to_dict(bubble_data,st_strings)
+                    for st_key_l in st_strings:
+                        for st_key_r in st_strings:
+                            key = f"{st_key_l},{vertex_string_l};{st_key_r},{vertex_string_r}"
+                            bubble[key] = bubble_dict[f"{st_key_l}{st_key_r}"]
+    return bubble
