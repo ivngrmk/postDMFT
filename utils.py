@@ -3,6 +3,12 @@ from numpy.polynomial.polynomial import Polynomial, polydiv
 from scipy.stats import norm as normal_distribution
 from scipy.optimize import minimize
 
+def get_diag(array_2d: np.ndarray):
+    if (len(array_2d.shape) != 2 or array_2d.shape[0] != array_2d.shape[1]): raise RuntimeError
+    npoints = array_2d.shape[0]
+    diag = np.array([array_2d[i,i] for i in range(npoints)])
+    return diag
+
 def spin2index(symbol):
     if symbol == 'x':
         return 0

@@ -138,3 +138,25 @@ class BZPath():
 
     def __len__(self):
         return len(self.T)
+    
+def extend_by_periodicity(array_1d, array_2d):
+     # Extending array to imply periodic conditions on interpolation.
+    if (len(array_1d.shape) != 1 or len(array_2d.shape) != 2): raise RuntimeError
+    if (array_1d.shape[0] != array_2d.shape[0]): raise RuntimeError
+    if (array_2d.shape[0] != array_2d.shape[1]): raise RuntimeError("Only square arrays are assumed.")
+    npoints = array_1d.shape[0]
+    dk = array_1d[1] - array_1d[0]
+    array_1d_extended = np.array([array_1d[0] - dk,]+list(array_1d)+[array_1d[-1] + dk])
+    array_2d_extended = np.zeros((npoints+2,npoints+2),dtype=array_2d.dtype)
+    for iqx,_ in enumerate(array_1d):
+        array_2d_extended[-1,iqx+1] = array_2d[ 0+1,iqx]
+        array_2d_extended[ 0,iqx+1] = array_2d[-1-1,iqx]
+    for iqy,_ in enumerate(array_1d):
+        array_2d_extended[iqy+1,-1] = array_2d[ 0+1,iqy]
+        array_2d_extended[iqy+1, 0] = array_2d[-1-1,iqy]
+    array_2d_extended[-1, 0] = array_2d[ 0+1,-1-1]
+    array_2d_extended[ 0,-1] = array_2d[-1-1, 0+1]
+    array_2d_extended[-1,-1] = array_2d[ 0+1, 0+1]
+    array_2d_extended[ 0, 0] = array_2d[-1-1,-1-1]
+    array_2d_extended[1:-1,1:-1] = array_2d
+    return array_1d_extended, array_2d_extended

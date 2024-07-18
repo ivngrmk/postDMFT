@@ -123,10 +123,11 @@ class iQISTResponse():
         if regularization < 0.0:
             print("Regularizaiton is negative, setting regularization to 'zero'.")
             regularization = FLOATZERO
-        inverse_data = self.im_data + np.identity(4)*regularization
+        inverse_data = self.im_data.copy() + np.identity(4)*regularization
         for k in range(self.nbfrq):
             for iqx in range(2*self.nkp+1):
                 for iqy in range(2*self.nkp+1):
+                    # print(k,iqx,iqy)
                     inverse_data[iqx, iqy, k, :, :] = lg.inv(inverse_data[iqx, iqy, k, :, :])
         reginv = iQISTResponse()
         reginv.load_from_array(inverse_data)
@@ -212,7 +213,10 @@ def compute_chi_from_phi(U_value: float, phi: iQISTResponse, regularization=0.0)
         signular_part_left = SingularPartLeft(U_value=U_value)
         signular_part_left.compute_from_phi(phi=phi)
         reginv = signular_part_left.inv(regularization=regularization)
-        return reginv @ phi
+        temp_data = (reginv @ phi).im_data
+        chi = Chi()
+        chi.load_from_array(temp_data)
+        return chi
 
 class SingularPart(iQISTResponse):
     def __init__(self, U_value: float):
@@ -239,29 +243,26 @@ class SingularPart(iQISTResponse):
             for iqy in range(self.im_data.shape[1]):
                 for k in range(self.im_data.shape[2]):
                     min_eigenvalues[iqx,iqy,k] = np.min(np.real(eigenvalues[iqx,iqy,k,:]))
+        return min_eigenvalues
 
 class SingularPartLeft(SingularPart):
     def compute_from_phi(self, phi: iQISTResponse):
-        self.nkp = phi.nkp
-        self.nbfrq = phi.nbfrq
-        self.wv_mesh = phi.wv_mesh.copy()
-        self.im_data = np.empty_like(phi.im_data)
-        for k in range(self.nbfrq):
-            for iqx in range(2*self.nkp+1):
-                for iqy in range(2*self.nkp+1):
-                    self.im_data[iqx, iqy, k, :, :] = np.identity(4) - np.matmul(self.im_data[iqx, iqy, k, :, :], self.U_matrix)
+        temp_data = np.empty_like(phi.im_data)
+        for k in range(phi.nbfrq):
+            for iqx in range(2*phi.nkp+1):
+                for iqy in range(2*phi.nkp+1):
+                    temp_data[iqx, iqy, k, :, :] = np.identity(4) - np.matmul(phi.im_data[iqx, iqy, k, :, :], self.U_matrix)
+        self.load_from_array(temp_data)
 
 
 class SingularPartRight(SingularPart):
     def compute_from_phi(self, phi: iQISTResponse):
-        self.nkp = phi.nkp
-        self.nbfrq = phi.nbfrq
-        self.wv_mesh = phi.wv_mesh.copy()
-        self.im_data = np.empty_like(phi.im_data)
-        for k in range(self.nbfrq):
-            for iqx in range(2*self.nkp+1):
-                for iqy in range(2*self.nkp+1):
-                    self.im_data[iqx, iqy, k, :, :] = np.identity(4) - np.matmul(self.U_matrix, self.im_data[iqx, iqy, k, :, :])
+        temp_data = np.empty_like(phi.im_data)
+        for k in range(phi.nbfrq):
+            for iqx in range(2*phi.nkp+1):
+                for iqy in range(2*phi.nkp+1):
+                    temp_data[iqx, iqy, k, :, :] = np.identity(4) - np.matmul(self.U_matrix, phi.im_data[iqx, iqy, k, :, :])
+        self.load_from_array(temp_data)
 
 
 class Chi(iQISTResponse):

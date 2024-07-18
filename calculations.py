@@ -248,40 +248,15 @@ class Calculation():
 
     def recalculate_chi(self,regularization=0.0):
         self.chi = compute_chi_from_phi(U_value = self.params["U"], phi = self.phi, regularization = regularization)
-
-    # def recalculate_chi(self,source="chi_call"):
-        # if source == "chi_call":
-            # if not self.chi.interpolated:
-                # raise RuntimeError
-            # chi_data = np.empty_like(self.chi.im_data)
-            # nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
-            # for iqx in range(nkp_x):
-                # for iqy in range(nkp_y):
-                    # for k in range(full_nbfrq):
-                        # chi_data[iqx,iqy,k,:,:] = self.chi(k, self.kmesh[iqx], self.kmesh[iqy], representation="default")
-            # self.chi.load_from_array(chi_data)
-            # inv_chi_data = np.empty_like(self.chi.im_data)
-            # nkp_x, nkp_y, full_nbfrq = self.chi.im_data.shape[:3]
-            # for iqx in range(nkp_x):
-                # for iqy in range(nkp_y):
-                    # for k in range(full_nbfrq):
-                        # try:
-                            # inv_chi_data[iqx, iqy, k, :, :] = scipy.linalg.inv(self.chi.im_data[iqx, iqy, k, :, :])
-                        # except scipy.linalg.LinAlgError as err:
-                            # print(err, iqx,iqy,k)
-                            # inv_chi_data[iqx, iqy, k, :, :] = np.zeros((4,4))
-            # self.inv_chi.load_from_array(inv_chi_data)
-        # else:
-            # raise ValueError("Wrong source parameter.")
         
     def compute_singular_parts(self, regularization):
         self.singular_part_right = SingularPartRight(U_value=self.params["U"])
         self.singular_part_right.compute_from_phi(self.phi)
-        self.inversed_singular_part_right = self.singular_part_right.inv(regularization)
+        # self.inversed_singular_part_right = self.singular_part_right.inv(regularization)
 
         self.singular_part_left = SingularPartLeft(U_value=self.params["U"])
         self.singular_part_left.compute_from_phi(self.phi)
-        self.inversed_singular_part_left = self.singular_part_left.inv(regularization)
+        # self.inversed_singular_part_left = self.singular_part_left.inv(regularization)
 
     def __get_params(self, h5fn):
         params = {}
