@@ -113,6 +113,11 @@ class iQISTResponse():
         new_response = iQISTResponse()
         new_response.load_from_array(np.einsum("lmnij,lmnjk->lmnik",self.im_data,other_response.im_data, optimize='optimal'))
         return new_response
+    
+    def __mul__(self, number: complex):
+        new_response = iQISTResponse()
+        new_response.load_from_array(self.im_data*number)
+        return new_response
 
     def __neg__(self):
         new_response = iQISTResponse()
@@ -123,11 +128,12 @@ class iQISTResponse():
         if regularization < 0.0:
             print("Regularizaiton is negative, setting regularization to 'zero'.")
             regularization = FLOATZERO
+        else:
+            print(f"Regularizaiton is {regularization}.")
         inverse_data = self.im_data.copy() + np.identity(4)*regularization
         for k in range(self.nbfrq):
             for iqx in range(2*self.nkp+1):
                 for iqy in range(2*self.nkp+1):
-                    # print(k,iqx,iqy)
                     inverse_data[iqx, iqy, k, :, :] = lg.inv(inverse_data[iqx, iqy, k, :, :])
         reginv = iQISTResponse()
         reginv.load_from_array(inverse_data)
@@ -351,6 +357,12 @@ class Chi(iQISTResponse):
         temp_chi.load_from_array(temp_data)
         return temp_chi
     
+    def __mul__(self,number: complex):
+        temp_data = super().__mul__(number).im_data
+        temp_chi = Chi()
+        temp_chi.load_from_array(temp_data)
+        return temp_chi
+    
     def inv(self, regularization=0.0):
         inv_chi = Chi()
         inv_chi.load_from_array(self.inv(regularization=regularization).im_data)
@@ -361,57 +373,6 @@ class Chi(iQISTResponse):
         new_chi = Chi()
         new_chi.load_from_array(iqist_response.refine_wv_mesh(new_nkp=new_nkp).im_data)
         return new_chi
-
-    # def interpolate(self, verbose=False, method="RB", method_settings={ "Nx": 5,"Ny": 5 }):
-        # print(method)
-        # if method == "phi":
-            # raise NotImplemented
-            # if method_settings["phi"].interpolated:
-                # self.interpolated = True
-                # self.phi_interpolation = True
-                # self.phi_for_interpolation = copy.deepcopy(method_settings["phi"])
-                # self.U_matrix = method_settings["U_matrix"]
-                # self.regularization = method_settings["regularization"]
-            # else:
-                # raise RuntimeError
-        # else: 
-            # self.phi_interpolation = False
-            # return super().interpolate(verbose, method, method_settings)
-
-    # def __call__(self, k: int, qx_i, qy_i, representation="spin"):
-        # if self.interpolated:
-            # if self.phi_interpolation:
-                # phi_calculated = self.phi_for_interpolation(k, qx_i, qy_i, representation="default")
-                # tmp_matrix_default = phi_calculated @ lg.inv((1.0 + self.regularization) * np.identity(4) - self.U_matrix @ phi_calculated)
-            # else:
-                # qx = periodic(qx_i)
-                # qy = periodic(qy_i)
-                # tmp_matrix_default = np.zeros((4, 4), dtype=complex)
-                # for n in range(4):
-                    # for m in range(4):
-                        # tmp_matrix_default[n, m] = self.component_functions_re[k, n, m](qx, qy) + 1j*self.component_functions_im[k, n, m](qx, qy)
-            # if representation == "default":
-                # return tmp_matrix_default
-            # else:
-                # if representation == "spin":
-                    # tmp_matrix_spin = self.TL @ tmp_matrix_default @ self.TR
-                    # return tmp_matrix_spin
-                # elif representation == "rotational":
-                    # tmp_matrix_rot = self.RL @ self.TL @ tmp_matrix_default @ self.TR @ self.RR
-                    # return tmp_matrix_rot
-                # else:
-                    # raise TypeError(
-                        # "Unrecognized susceptibility's representation type.")
-        # else:
-            # raise RuntimeError("Interpolation was not performed correctly.")
-
-    # def imax_data(self,q: np.ndarray, representation="spin"):
-        # qx = q[0]
-        # qy = q[1]
-        # temp = np.zeros((len(self.bfreqs),4,4),dtype=complex)
-        # for k in range(len(temp)):
-            # temp[k] = self(k, qx, qy, representation=representation)
-        # return temp
 
     def initialize_continuation(self, wv_path: BZPath, re_mesh: np.ndarray, component: tuple):
         """Method to prepare susceptibility object for analytic continuation and to load appropriate data structures.

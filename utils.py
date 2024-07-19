@@ -77,14 +77,14 @@ def spin2index(symbol):
         return 2
     raise TypeError("Unrecognized symbol: " + str(symbol))
 
-def index2spin(m):
-    if m == 0:
-        return 'x'
-    if m == 1:
-        return 'y'
-    if m == 2:
-        return 'z'
-    raise TypeError("Unrecognized number: " + str(m))
+# def index2spin(m):
+    # if m == 0:
+        # return 'x'
+    # if m == 1:
+        # return 'y'
+    # if m == 2:
+        # return 'z'
+    # raise TypeError("Unrecognized number: " + str(m))
 
 def index2rot(m):
     if m == 0:
@@ -117,6 +117,9 @@ def m2spinstr(m):
         return "z"
     if m == 3 or m == -1:
         return "0"
+    raise TypeError("Unrecognized number: " + str(m))
+
+index2spin = m2spinstr
 
 
 def sigma2str(sigma):

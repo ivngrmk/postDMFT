@@ -209,15 +209,7 @@ class Calculation():
 
         # INV_CHI_XYZ
         if calc_rules["inv_chi_xyz"]:
-            self.inv_chi_xyz = Chi()
-            inv_chi_xyz_data = np.empty_like(self.chi.im_data)
-            for iqx in range(inv_chi_xyz_data.shape[0]):
-                for iqy in range(inv_chi_xyz_data.shape[1]):
-                    for k in range(inv_chi_xyz_data.shape[2]):
-                        inv_chi_xyz_data[iqx, iqy, k, :3, :3] = scipy.linalg.inv(self.chi.im_data[iqx, iqy, k, :3, :3])
-                        inv_chi_xyz_data[iqx, iqy, k, 3, :] = np.nan
-                        inv_chi_xyz_data[iqx, iqy, k, :, 3] = np.nan
-            self.inv_chi_xyz.load_from_array(inv_chi_xyz_data)
+            self.compute_inv_chi_xyz()
 
         # U_MATRIX
         self.U_matrix = np.zeros((4, 4))
@@ -248,16 +240,31 @@ class Calculation():
             raise KeyError("At least phi or chi0 should be spectidied to be loaded.")
 
     def recalculate_chi(self,regularization=0.0):
-        self.chi = compute_chi_from_phi(U_value = self.params["U"], phi = self.phi, regularization = regularization)
+        self.chi = self.compute_chi(regularizaiton=regularization)
+
+    def compute_chi(self,regularization=0.0):
+        return compute_chi_from_phi(U_value = self.params["U"], phi = self.phi, regularization = regularization)
+    
+    def compute_inv_chi_xyz(self, chi: Chi = None) -> None:
+        if chi is None:
+            chi = self.chi
+        self.inv_chi_xyz = Chi()
+        inv_chi_xyz_data = np.empty_like(chi.im_data)*0.0
+        for iqx in range(inv_chi_xyz_data.shape[0]):
+            for iqy in range(inv_chi_xyz_data.shape[1]):
+                for k in range(inv_chi_xyz_data.shape[2]):
+                    inv_chi_xyz_data[iqx,iqy,k,:3,:3] = scipy.linalg.inv(self.chi.im_data_spin[iqx,iqy,k,:3,:3])
+                    inv_chi_xyz_data[iqx,iqy,k,:,:] = Chi.TR @ inv_chi_xyz_data[iqx,iqy,k,:,:] @ Chi.TL
+        self.inv_chi_xyz.load_from_array(inv_chi_xyz_data)
         
-    def compute_singular_parts(self, regularization):
+    def compute_singular_parts(self, regularization=0.0):
         self.singular_part_right = SingularPartRight(U_value=self.params["U"])
         self.singular_part_right.compute_from_phi(self.phi)
-        # self.inversed_singular_part_right = self.singular_part_right.inv(regularization)
+        self.inversed_singular_part_right = self.singular_part_right.inv(regularization)
 
         self.singular_part_left = SingularPartLeft(U_value=self.params["U"])
         self.singular_part_left.compute_from_phi(self.phi)
-        # self.inversed_singular_part_left = self.singular_part_left.inv(regularization)
+        self.inversed_singular_part_left = self.singular_part_left.inv(regularization)
 
     def __get_params(self, h5fn):
         params = {}
@@ -298,6 +305,135 @@ class Calculation():
         except:
             params["symbf"] = None
         self.params = params
+    
+    def load_chi0L(self, h5fn: str) -> None:
+        S_strings     = ['tau','x','y']
+        T_strings     = ['0','+',  '-']
+        T_strings_aux = ['' ,'_p','_m']
+        self.chi0L = load_LorR(calc_fn=h5fn, basename="chi0L", S_strings=S_strings, T_strings=T_strings, T_strings_aux=T_strings_aux, postfix="_closed")
+
+    def load_chi0R(self, h5fn: str) -> None:
+        S_strings     = ['tau','x','y']
+        T_strings     = ['0','+',  '-']
+        T_strings_aux = ['' ,'_p','_m']
+        self.chi0R = load_LorR(calc_fn=h5fn, basename="chi0R", S_strings=S_strings, T_strings=T_strings, T_strings_aux=T_strings_aux, postfix="_closed")
+
+    def load_chi0LR(self, h5fn: str) -> None:
+        S_strings = ['tau','x','y']
+        T_strings = [None,'+','-']
+        T_strings_aux = [None,'p','m']
+        self.chi0LR = load_LR(calc_fn=h5fn,basename="chi0LR_", S_strings=S_strings, T_strings=T_strings, T_strings_aux=T_strings_aux, postfix="_closed")
+
+    def compute_diam(self, h5fn: str) -> None:
+        with h5py.File(h5fn,'r') as h5f:
+            diam_K_data = get_complex_data(h5f,"diam_K")
+        diam_K = np.zeros((3,3),dtype=complex)
+        for alpha1 in range(1,3):
+            for alpha2 in range(1,3):
+                diam_K[alpha1,alpha2]  =  -( diam_K_data[1,alpha1,alpha2,0,0] + diam_K_data[1,alpha1,alpha2,1,1])/4
+                diam_K[alpha1,alpha2] +=  -( diam_K_data[2,alpha1,alpha2,0,1] - diam_K_data[2,alpha1,alpha2,1,0])/4*1j
+        S_strings = ['x','y']
+        self.diam = {}
+        for S1_idx, S1 in enumerate(S_strings):
+            for S2_idx, S2 in enumerate(S_strings):
+                self.diam[f"{S1};{S2}"] = diam_K[1+S1_idx,1+S2_idx]
+
+    def compute_KYY(self, mf_calc: bool = False, regularization: float = 0.0, verbose: bool = False, S_strings = ["+","-"]) -> None:
+        T_strings = ["+", "-"]
+        K_0          = {}
+        K_phi        = {}
+        K_ladder     = {}
+        K_correction = {}
+
+        def factor_and_spins(ML: list[str,str],MR: list[str,str]) -> list[complex, list[str,str]]:
+            if not (len(ML) == 2 and len(MR) == 2): raise RuntimeError
+            SL = ML[0]
+            TL = ML[1]
+            SR = MR[0]
+            TR = MR[1]
+            f = complex(1.0)
+            if SL != "tau":
+                f *= (-1j)
+            if SR != "tau":
+                f *= (-1j)
+            if TL == "+":
+                sigmaL = 1 # y
+                f *= 1.0
+            elif TL == "-":
+                sigmaL = -1 # 0
+                f *= 1.0
+            if TR == "+":
+                sigmaR = 1 # y
+                f *= 1.0
+            elif TR == "-":
+                sigmaR = -1 # 0
+                f *= 1.0
+            return f, [sigmaL,sigmaR]
+
+        print("inv_chi_xyz and singular_parts are overwritten by compute_KYY.")
+        chi_reg = self.compute_chi(regularization=regularization)
+        self.compute_singular_parts(regularization=regularization)
+        self.compute_inv_chi_xyz(chi = chi_reg)
+        S_strings = ["x","y"]
+        T_strings = ["+", "-"]
+        for S1 in S_strings:
+            for S2 in S_strings:
+                key = f"{S1};{S2}"
+                K_0[key]          = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
+                K_phi[key]        = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
+                K_ladder[key]     = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
+                K_correction[key] = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
+                for T1 in T_strings:
+                    for T2 in T_strings:
+                        f,spins = factor_and_spins([S1,T1],[S2,T2])
+                        multikey = f"{S1},{T1};{S2},{T2}"
+                        M1 = f"{S1},{T1}"
+                        M2 = f"{S2},{T2}"
+                        if verbose: print(key,multikey,M1,M2,spins)
+                        if not mf_calc:
+                            raise NotImplementedError
+                        else:
+                            K_0[key] += f*(self.chi0LR[multikey].im_data_spin[:,:,:,*spins])
+                            K_ladder[key] += f*((self.chi0L[M1] @ self.inversed_singular_part_right @ self.U_matrix_extended @ self.chi0R[M2]).im_data_spin[:,:,:,*spins])
+                            K_correction[key] += f*((self.chi0L[M1] @ self.inversed_singular_part_right @ self.inv_chi_xyz @ self.inversed_singular_part_left @ self.chi0R[M2]).im_data_spin[:,:,:,*spins])
+        return K_0, K_phi, K_ladder, K_correction
+
+    def compute_KXX(self, mf_calc: bool = False, regularization: float = 0.0, verbose: bool = False, S_strings = ["+","-"]) -> None:
+        T_strings = ["+", "-"]
+        K_0          = {}
+        K_phi        = {}
+        K_ladder     = {}
+        K_correction = {}
+
+        def factor_and_spins(ML: list[str,str],MR: list[str,str]) -> list[complex, list[str,str]]:
+            raise NotImplementedError
+        
+        print("inv_chi_xyz and singular_parts are overwritten by compute_KYY.")
+        chi_reg = self.compute_chi(regularization=regularization)
+        self.compute_singular_parts(regularization=regularization)
+        self.compute_inv_chi_xyz(chi = chi_reg)
+        S_strings = ["x","y"]
+        T_strings = ["+", "-"]
+        for S1 in S_strings:
+            for S2 in S_strings:
+                key = f"{S1};{S2}"
+                K_0[key]          = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
+                K_phi[key]        = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
+                K_ladder[key]     = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
+                K_correction[key] = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
+                for T1 in T_strings:
+                    for T2 in T_strings:
+                        f,spins = factor_and_spins([S1,T1],[S2,T2])
+                        multikey = f"{S1},{T1};{S2},{T2}"
+                        M1 = f"{S1},{T1}"
+                        M2 = f"{S2},{T2}"
+                        if verbose: print(key,multikey,M1,M2,spins)
+                        if not mf_calc:
+                            raise NotImplementedError
+                        else:
+                            raise NotImplementedError
+        return K_0, K_phi, K_ladder, K_correction
+       
 
 def get_complex_data(h5f,data_name):
     return (np.array(h5f[data_name+"_real"])+1j*np.array(h5f[data_name+"_imag"])).transpose()
@@ -349,42 +485,106 @@ def LR_to_dict(array,strings):
     listarray = LR_to_list(array=array)
     return list2d_to_dict(list2d=listarray,strings=strings)
 
-# TODO: Каким-то образом ТЕКСТОМ описать текущее состояние дел на тему того, в каком виде токовые корреляторы записаны в hdf5 файлах,
-# как и в каком виде они загружаются в питоновские струкртуры данных.
+## Мультииндексы токовых корреляторов
+# Токовые корреляторы отличаются от обычных двухчастичных корреляционных функций
+# наличием дополнительных мультииндексов, каждый из которых состоит из двух частей:
+# пространственно-временного индекса (тип S, от слова space) и индекса,
+# характеризующего тип используемой вершины (тип T, от слова type).
+# Все мультииндексы принадлежат одному и тому же множеству мультииндексов,
+# представляющему собой декартовое произведение фиксированных множеств индексов типа T и типа S.
+# Каждому индексу типа T соответствует некоторая буквенная комбинация. По-умолчанию T \in {tau,x,y}.
+# Каждому индексу типа S соответствует некоторая буквенная комбинация. По-умолчанию S \in {  ,+,-}.
 
-# All current-current correlation functions have two types of additional indecies. At the very end both are stored as 
-# Index type 1: Is a part of a numpy data structures in hdf5 files.
+## Типы токовых корреляторов
+# Существует два типа токовых корреляторов: LorR и LR.
+# Первый тип харктеризуется наличием лишь одного мультииндекса, а второй - наличием двух мультииндексов.
 
-# All current-current correlation functions are asumed to belong to one of the following classes.
-# Type 1: LorR class.
-#   It's members have one spect-time index \mu and one 'sign' index \alpha. It is assumed that \alpha\in{0,+,-}.
+## Структура токовых корреляторов, записанных в hdf5 архивы.
+# В hdf5 архивах массивы данных, отвечающих токовым корреляторам хранятся в виде нескольких отдельных подмассивов,
+# каждый из которых отвечает конкретному индексу (конкретной паре индексов) типа T для
+# LorR (LR) токового коррелятора. Конкретный подмассив сохраняется в виде датасета,
+# название которого имеед следующий вид.
+# Для токового коррелятора типа LorR название датасета {basename}{a}{prefix},
+# где a - символьное обозначения индекса типа T.
+# Для токового коррелятора типа LR название датасета {basename}{a}{b}{prefix},
+# где a,b - символьные обозначения индексов типа T.
+# basename и prefix - некоторые наборы символов, возможно включащие в себя символы нижнего подчёркивания.
+# Каждый датасет имеет форму
+# (K,K,F,S,sigma,sigma) для токового коррелятора типа LorR и
+# (K,K,F,S,S,sigma,sigma) для токового коррелятора типа LR,
+# где K - индексы, соответствующие волновым векторам, F - частотам, а
+# sigma - спиновым индексам.
 
-def load_LorR(calc_fn, base_name, st_strings, vertex_strings, vertex_aux_strings = None, postfix = ""):
-    if vertex_aux_strings is None:
-        vertex_aux_strings = vertex_strings
+## Представление в виде структуры данных в Python.
+# Токовые корреляторы представлены в Python в виде словаря, состаящего из пар
+# ключ - значение, где в качестве значений используются обыкновенные корреляторы типа Chi,
+# а каждый ключ соответствует мультиидексу (паре мультииндексов)
+# токового коррелятора типа LorR (типа LR).
+# В случае токового коррелятора типа LorR отображение ключ -> значение
+# имеет вид: "T,S" : Chi
+# В случае токового коррелятора типа LR отображение ключ -> значение
+# имеет вид: "TL,SL;TR,SR" : Chi
+
+def load_LorR(calc_fn: str, basename: str, S_strings: list, T_strings: list, T_strings_aux: list = None, postfix = "") -> dict:
+    """Creates a dictionary representing current correlation function of type LorR.
+
+    Args:
+        calc_fn (str): Name of the hdf5 archive.
+        basename (str): {basename} used for current correlation function datasets' names.
+        S_strings (list): List of S-type strings.
+        T_strings (list): List of T-type strings used on Python side.
+        T_strings_aux (list, optional): List of T-type strings used on Fortran side. Defaults to S_strings.
+        postfix (str, optional): {postfix} used for current correlation function datasets' names. Defaults to "".
+
+    Returns:
+        dict: {"S,T": Chi, ...}, where S from S_strings, T from T_strings
+    """
+    if T_strings_aux is None:
+        T_strings_aux = T_strings
+    is_ok = True
+    is_ok = is_ok and (len(S_strings) == len(T_strings) == len(T_strings_aux))
+    if not is_ok:
+        raise RuntimeError
     bubble = {}
     with h5py.File(calc_fn,'r') as calc_f:
-        for vertex_idx, vertex_string in enumerate(vertex_strings):
+        for vertex_idx, vertex_string in enumerate(T_strings):
             if vertex_string:
-                bubble_data = get_complex_data(calc_f,f"{base_name}{vertex_aux_strings[vertex_idx]}{postfix}")
-                bubble_dict = LorR_to_dict(bubble_data,st_strings)
-                for st_key in st_strings:
+                bubble_data = get_complex_data(calc_f,f"{basename}{T_strings_aux[vertex_idx]}{postfix}")
+                bubble_dict = LorR_to_dict(bubble_data,S_strings)
+                for st_key in S_strings:
                     bubble[f"{st_key},{vertex_string}"] = bubble_dict[st_key]
     return bubble
 
-def load_LR(calc_fn, base_name, st_strings, vertex_strings, vertex_aux_strings = None, postfix = ""):
-    if vertex_aux_strings is None:
-        vertex_aux_strings = vertex_strings
+def load_LR(calc_fn: str, basename: str, S_strings: list, T_strings: list, T_strings_aux: list = None, postfix = "") -> dict:
+    """Creates a dictionary representing current correlation function of  type LR.
+
+    Args:
+        calc_fn (str): Name of the hdf5 archive.
+        basename (str): {basename} used for current correlation function datasets' names.
+        S_strings (list): List of S-type strings.
+        T_strings (list): List of T-type strings used on Python side.
+        T_strings_aux (list, optional): List of T-type strings used on Fortran side. Defaults to S_strings.
+        postfix (str, optional): {postfix} used for current correlation function datasets' names. Defaults to "".
+
+    Returns:
+        dict: {"SL,TL;SR,TR": Chi, ...}, where SL,SR from S_strings, TL,TR from T_strings
+    """
+    if T_strings_aux is None:
+        T_strings_aux = T_strings
+    is_ok = True
+    is_ok = is_ok and (len(S_strings) == len(T_strings) == len(T_strings_aux))
+    if not is_ok:
+        raise RuntimeError
     bubble = {}
     with h5py.File(calc_fn,'r') as calc_f:
-        for vertex_idx_l, vertex_string_l in enumerate(vertex_strings):
-            for vertex_idx_r, vertex_string_r in enumerate(vertex_strings):
+        for vertex_idx_l, vertex_string_l in enumerate(T_strings):
+            for vertex_idx_r, vertex_string_r in enumerate(T_strings):
                 if vertex_string_l and vertex_string_r:
-                    dataset_name = f"{base_name}{vertex_aux_strings[vertex_idx_l]}{vertex_aux_strings[vertex_idx_r]}{postfix}"
+                    dataset_name = f"{basename}{T_strings_aux[vertex_idx_l]}{T_strings_aux[vertex_idx_r]}{postfix}"
                     bubble_data = get_complex_data(calc_f,dataset_name)
-                    bubble_dict = LR_to_dict(bubble_data,st_strings)
-                    for st_key_l in st_strings:
-                        for st_key_r in st_strings:
+                    bubble_dict = LR_to_dict(bubble_data,S_strings)
+                    for st_key_l in S_strings:
+                        for st_key_r in S_strings:
                             key = f"{st_key_l},{vertex_string_l};{st_key_r},{vertex_string_r}"
                             bubble[key] = bubble_dict[f"{st_key_l}{st_key_r}"]
     return bubble
