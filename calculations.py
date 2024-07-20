@@ -309,14 +309,14 @@ class Calculation():
 
     def load_phiL(self, h5fn: str) -> None:
         S_strings     = ['tau','x','y']
-        T_strings     = ['0','+',  '-']
-        T_strings_aux = ['' ,'_p','_m']
+        T_strings     = ['+',  '-']
+        T_strings_aux = ['_p','_m']
         self.phiL = load_LorR(calc_fn=h5fn, basename="phiL", S_strings=S_strings, T_strings=T_strings, T_strings_aux=T_strings_aux, postfix="")
 
     def load_phiR(self, h5fn: str) -> None:
         S_strings     = ['tau','x','y']
-        T_strings     = ['0','+',  '-']
-        T_strings_aux = ['' ,'_p','_m']
+        T_strings     = ['+',  '-']
+        T_strings_aux = ['_p','_m']
         self.phiR = load_LorR(calc_fn=h5fn, basename="phiR", S_strings=S_strings, T_strings=T_strings, T_strings_aux=T_strings_aux, postfix="")
 
     def load_chi0R(self, h5fn: str) -> None:
@@ -746,7 +746,7 @@ def load_LorR(calc_fn: str, basename: str, S_strings: list, T_strings: list, T_s
     if T_strings_aux is None:
         T_strings_aux = T_strings
     is_ok = True
-    is_ok = is_ok and (len(S_strings) == len(T_strings) == len(T_strings_aux))
+    is_ok = is_ok and (len(T_strings) == len(T_strings_aux))
     if not is_ok:
         raise RuntimeError
     bubble = {}
