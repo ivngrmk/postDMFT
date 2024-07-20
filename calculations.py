@@ -4,6 +4,7 @@ import scipy.linalg
 from postDMFT.twoparticle import Chi, SingularPartRight, SingularPartLeft, iQISTResponse, compute_chi_from_phi, compute_inv_chi_xyz_from_chi
 from postDMFT.kspace import v2d, shift_q
 from postDMFT.utils import list1d_to_dict, list2d_to_dict
+from postDMFT.common import FLOATZERO
 
 class HubbardSystem():
     """ Class to keep all information about particular calculation: its parameters and thermodynamic properties. """
@@ -229,6 +230,11 @@ class Calculation():
                         U_matrix_extended_data[iqx, iqy, k, :, :] = self.U_matrix
             self.U_matrix_extended.load_from_array(U_matrix_extended_data)
 
+    def no_zero_iq(self,array: np.ndarray) -> np.ndarray:
+        temp_list = list(array.copy())
+        del temp_list[self.zero_iq]
+        return np.array(temp_list)
+
     def __check_input(self):
         # Check if updated calc_rules are consistent.
         calc_rules = self.calc_rules
@@ -240,14 +246,37 @@ class Calculation():
             raise KeyError("At least phi or chi0 should be spectidied to be loaded.")
 
     def recalculate_chi(self,regularization=0.0):
-        self.chi = self.compute_chi(regularizaiton=regularization)
+        self.chi = self.compute_chi(regularization=regularization)
 
     def compute_chi(self,regularization=0.0):
         return compute_chi_from_phi(U_value = self.params["U"], phi = self.phi, regularization = regularization)
     
+    def compute_chi_pQ(self,regularization=0.0):
+        phi_pQ = Chi()
+        phi_pQ_data = np.empty_like(self.phi.im_data)
+        for sigma1 in range(4):
+            for sigma2 in range(4):
+                for k in range(self.phi.nbfrq):
+                    phi_pQ_data[:,:,k,sigma1,sigma2] = shift_q(self.phi.im_data[:,:,k,sigma1,sigma2],self.params["Q"],self.kmesh)
+        phi_pQ.load_from_array(phi_pQ_data)
+        return compute_chi_from_phi(U_value = self.params["U"], phi = phi_pQ, regularization = regularization)
+    
+    def compute_chi_mQ(self,regularization=0.0):
+        phi_mQ = Chi()
+        phi_mQ_data = np.empty_like(self.phi.im_data)
+        for sigma1 in range(4):
+            for sigma2 in range(4):
+                for k in range(self.phi.nbfrq):
+                    phi_mQ_data[:,:,k,sigma1,sigma2] = shift_q(self.phi.im_data[:,:,k,sigma1,sigma2],-self.params["Q"],self.kmesh)
+        phi_mQ.load_from_array(phi_mQ_data)
+        return compute_chi_from_phi(U_value = self.params["U"], phi = phi_mQ, regularization = regularization)
+    
     def compute_inv_chi_xyz(self, chi: Chi = None) -> None:
         if chi is None:
             chi = self.chi
+            print("Used self.chi.")
+        else:
+            print("Used chi from the argument.")
         self.inv_chi_xyz = Chi()
         inv_chi_xyz_data = compute_inv_chi_xyz_from_chi(chi=chi).im_data
         self.inv_chi_xyz.load_from_array(inv_chi_xyz_data)
