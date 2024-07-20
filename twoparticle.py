@@ -125,11 +125,7 @@ class iQISTResponse():
         return new_response
     
     def inv(self, regularization = 0.0):
-        if regularization < 0.0:
-            print("Regularizaiton is negative, setting regularization to 'zero'.")
-            regularization = FLOATZERO
-        else:
-            print(f"Regularizaiton is {regularization}.")
+        print(f"Regularizaiton is {regularization}.")
         inverse_data = self.im_data.copy() + np.identity(4)*regularization
         for k in range(self.nbfrq):
             for iqx in range(2*self.nkp+1):
@@ -214,15 +210,6 @@ class iQISTResponse():
         new_response = iQISTResponse()
         new_response.load_from_array(new_im_data)
         return new_response
-
-def compute_chi_from_phi(U_value: float, phi: iQISTResponse, regularization=0.0):
-        signular_part_left = SingularPartLeft(U_value=U_value)
-        signular_part_left.compute_from_phi(phi=phi)
-        reginv = signular_part_left.inv(regularization=regularization)
-        temp_data = (reginv @ phi).im_data
-        chi = Chi()
-        chi.load_from_array(temp_data)
-        return chi
 
 class SingularPart(iQISTResponse):
     def __init__(self, U_value: float):
@@ -459,3 +446,23 @@ class Chi(iQISTResponse):
         else:
             raise RuntimeError(
                 "Analytic continuation was not yet performed.")
+        
+def compute_chi_from_phi(U_value: float, phi: iQISTResponse, regularization=0.0):
+    signular_part_left = SingularPartLeft(U_value=U_value)
+    signular_part_left.compute_from_phi(phi=phi)
+    reginv = signular_part_left.inv(regularization=regularization)
+    temp_data = (reginv @ phi).im_data
+    chi = Chi()
+    chi.load_from_array(temp_data)
+    return chi
+
+def compute_inv_chi_xyz_from_chi(chi: Chi) -> iQISTResponse:
+    inv_chi_xyz = Chi()
+    inv_chi_xyz_data = np.empty_like(chi.im_data)*0.0
+    for iqx in range(inv_chi_xyz_data.shape[0]):
+        for iqy in range(inv_chi_xyz_data.shape[1]):
+            for k in range(inv_chi_xyz_data.shape[2]):
+                inv_chi_xyz_data[iqx,iqy,k,:3,:3] = lg.inv(chi.im_data_spin[iqx,iqy,k,:3,:3])
+                inv_chi_xyz_data[iqx,iqy,k,:,:] = Chi.TR @ inv_chi_xyz_data[iqx,iqy,k,:,:] @ Chi.TL
+    inv_chi_xyz.load_from_array(inv_chi_xyz_data)
+    return inv_chi_xyz

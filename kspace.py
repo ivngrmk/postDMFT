@@ -1,5 +1,31 @@
 import numpy as np
 from scipy.linalg import norm
+from scipy.interpolate import RegularGridInterpolator
+
+def shift_q(array2d: np.ndarray, q: np.ndarray, K: np.ndarray, method="linear") -> np.ndarray:
+    """Method to shift a 2D numerial data defined on a square mesh in K-space on a fixed vector.
+
+    Args:
+        array2d (np.ndarray): 2D data to shift.
+        q (np.ndarray): Shifting vector.
+        K (np.ndarray): 1D mesh of points along each of the axes.
+        method (str, optional): Method to use for the interpolation. Is passed to the RegularGridInterpolator. Defaults to "linear".
+
+    Returns:
+        np.ndarray: Shifted 2D data.
+    """
+    is_ok = (len(array2d.shape) == 2) and (len(K.shape) == 1) and (array2d.shape[0] == array2d.shape[1] == K.shape[0]) and (len(q.shape) == 1) and (q.shape[0] == 2)
+    if not is_ok:
+        raise RuntimeError
+    interp = RegularGridInterpolator((K,K),array2d,method=method)
+    new_array2d = np.empty_like(array2d)
+    for ix,kx in enumerate(K):
+        for iy,ky in enumerate(K):
+            k = np.array([kx,ky])
+            new_k = k + q
+            new_k = periodic(new_k.copy())
+            new_array2d[ix,iy] = interp(new_k)[0]
+    return new_array2d
 
 def v2d(vx, vy):
     """ Function to easily create 2d wave vectors."""

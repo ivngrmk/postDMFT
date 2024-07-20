@@ -1,8 +1,8 @@
 import numpy as np
 import h5py
 import scipy.linalg
-from postDMFT.twoparticle import Chi, SingularPartRight, SingularPartLeft, iQISTResponse, compute_chi_from_phi
-from postDMFT.kspace import v2d
+from postDMFT.twoparticle import Chi, SingularPartRight, SingularPartLeft, iQISTResponse, compute_chi_from_phi, compute_inv_chi_xyz_from_chi
+from postDMFT.kspace import v2d, shift_q
 from postDMFT.utils import list1d_to_dict, list2d_to_dict
 
 class HubbardSystem():
@@ -249,12 +249,7 @@ class Calculation():
         if chi is None:
             chi = self.chi
         self.inv_chi_xyz = Chi()
-        inv_chi_xyz_data = np.empty_like(chi.im_data)*0.0
-        for iqx in range(inv_chi_xyz_data.shape[0]):
-            for iqy in range(inv_chi_xyz_data.shape[1]):
-                for k in range(inv_chi_xyz_data.shape[2]):
-                    inv_chi_xyz_data[iqx,iqy,k,:3,:3] = scipy.linalg.inv(self.chi.im_data_spin[iqx,iqy,k,:3,:3])
-                    inv_chi_xyz_data[iqx,iqy,k,:,:] = Chi.TR @ inv_chi_xyz_data[iqx,iqy,k,:,:] @ Chi.TL
+        inv_chi_xyz_data = compute_inv_chi_xyz_from_chi(chi=chi).im_data
         self.inv_chi_xyz.load_from_array(inv_chi_xyz_data)
         
     def compute_singular_parts(self, regularization=0.0):
@@ -312,6 +307,18 @@ class Calculation():
         T_strings_aux = ['' ,'_p','_m']
         self.chi0L = load_LorR(calc_fn=h5fn, basename="chi0L", S_strings=S_strings, T_strings=T_strings, T_strings_aux=T_strings_aux, postfix="_closed")
 
+    def load_phiL(self, h5fn: str) -> None:
+        S_strings     = ['tau','x','y']
+        T_strings     = ['0','+',  '-']
+        T_strings_aux = ['' ,'_p','_m']
+        self.phiL = load_LorR(calc_fn=h5fn, basename="phiL", S_strings=S_strings, T_strings=T_strings, T_strings_aux=T_strings_aux, postfix="")
+
+    def load_phiR(self, h5fn: str) -> None:
+        S_strings     = ['tau','x','y']
+        T_strings     = ['0','+',  '-']
+        T_strings_aux = ['' ,'_p','_m']
+        self.phiR = load_LorR(calc_fn=h5fn, basename="phiR", S_strings=S_strings, T_strings=T_strings, T_strings_aux=T_strings_aux, postfix="")
+
     def load_chi0R(self, h5fn: str) -> None:
         S_strings     = ['tau','x','y']
         T_strings     = ['0','+',  '-']
@@ -324,6 +331,12 @@ class Calculation():
         T_strings_aux = [None,'p','m']
         self.chi0LR = load_LR(calc_fn=h5fn,basename="chi0LR_", S_strings=S_strings, T_strings=T_strings, T_strings_aux=T_strings_aux, postfix="_closed")
 
+    def load_phitLR(self, h5fn: str) -> None:
+        S_strings = ['tau','x','y']
+        T_strings = [None,'+','-']
+        T_strings_aux = [None,'p','m']
+        self.phitLR = load_LR(calc_fn=h5fn,basename="phitLR_", S_strings=S_strings, T_strings=T_strings, T_strings_aux=T_strings_aux, postfix="")
+
     def compute_diam(self, h5fn: str) -> None:
         with h5py.File(h5fn,'r') as h5f:
             diam_K_data = get_complex_data(h5f,"diam_K")
@@ -332,10 +345,10 @@ class Calculation():
             for alpha2 in range(1,3):
                 diam_K[alpha1,alpha2]  =  -( diam_K_data[1,alpha1,alpha2,0,0] + diam_K_data[1,alpha1,alpha2,1,1])/4
                 diam_K[alpha1,alpha2] +=  -( diam_K_data[2,alpha1,alpha2,0,1] - diam_K_data[2,alpha1,alpha2,1,0])/4*1j
-        S_strings = ['x','y']
+        diam_S_strings = ['x','y']
         self.diam = {}
-        for S1_idx, S1 in enumerate(S_strings):
-            for S2_idx, S2 in enumerate(S_strings):
+        for S1_idx, S1 in enumerate(diam_S_strings):
+            for S2_idx, S2 in enumerate(diam_S_strings):
                 self.diam[f"{S1};{S2}"] = diam_K[1+S1_idx,1+S2_idx]
 
     def compute_KYY(self, mf_calc: bool = False, regularization: float = 0.0, verbose: bool = False, S_strings = ["+","-"]) -> None:
@@ -344,8 +357,7 @@ class Calculation():
         K_phi        = {}
         K_ladder     = {}
         K_correction = {}
-
-        def factor_and_spins(ML: list[str,str],MR: list[str,str]) -> list[complex, list[str,str]]:
+        def factor_and_spins(ML: list[str,str],MR: list[str,str]) -> list[complex, list[int,int]]:
             if not (len(ML) == 2 and len(MR) == 2): raise RuntimeError
             SL = ML[0]
             TL = ML[1]
@@ -369,7 +381,6 @@ class Calculation():
                 sigmaR = -1 # 0
                 f *= 1.0
             return f, [sigmaL,sigmaR]
-
         print("inv_chi_xyz and singular_parts are overwritten by compute_KYY.")
         chi_reg = self.compute_chi(regularization=regularization)
         self.compute_singular_parts(regularization=regularization)
@@ -389,14 +400,142 @@ class Calculation():
                         multikey = f"{S1},{T1};{S2},{T2}"
                         M1 = f"{S1},{T1}"
                         M2 = f"{S2},{T2}"
-                        if verbose: print(key,multikey,M1,M2,spins)
+                        if verbose: print(f,key,multikey,M1,M2,spins)
                         if not mf_calc:
-                            raise NotImplementedError
+                            K_0[key] += f*(self.chi0LR[multikey].im_data_spin[:,:,:,*spins])
+                            K_phi[key] += f*(self.phitLR[multikey].im_data_spin[:,:,:,*spins])
+                            K_ladder[key] += f*((self.phiL[M1] @ self.inversed_singular_part_right @ self.U_matrix_extended @ self.phiR[M2]).im_data_spin[:,:,:,*spins])
+                            K_correction[key] += f*((self.phiL[M1] @ self.inversed_singular_part_right @ self.inv_chi_xyz @ self.inversed_singular_part_left @ self.phiR[M2]).im_data_spin[:,:,:,*spins])
                         else:
                             K_0[key] += f*(self.chi0LR[multikey].im_data_spin[:,:,:,*spins])
                             K_ladder[key] += f*((self.chi0L[M1] @ self.inversed_singular_part_right @ self.U_matrix_extended @ self.chi0R[M2]).im_data_spin[:,:,:,*spins])
                             K_correction[key] += f*((self.chi0L[M1] @ self.inversed_singular_part_right @ self.inv_chi_xyz @ self.inversed_singular_part_left @ self.chi0R[M2]).im_data_spin[:,:,:,*spins])
-        return K_0, K_phi, K_ladder, K_correction
+        self.KYY_0          = K_0
+        self.KYY_phi        = K_phi
+        self.KYY_ladder     = K_ladder
+        self.KYY_correction = K_correction
+
+    def save_diam(self, calc_fn: str) -> None:
+        with h5py.File(calc_fn,'a') as calc_f:
+            diam_S_strings = ['x','y']
+            if "diam_S_strings" in calc_f:
+                del calc_f["diam_S_strings"]
+            calc_f.create_dataset("diam_S_strings",data=np.array(diam_S_strings,dtype='S'))
+            for S1 in diam_S_strings:
+                for S2 in diam_S_strings:
+                    key = f"{S1};{S2}"
+                    dsetn = f"diam_{key}"
+                    if dsetn in calc_f:
+                        del calc_f[dsetn]
+                    calc_f.create_dataset(dsetn,data=self.diam[key])
+
+
+    def load_diam(self, calc_fn: str) -> None:
+        with h5py.File(calc_fn,'r') as calc_f:
+            bdiam_S_strings = np.array(calc_f["diam_S_strings"])
+            diam_S_strings = []
+            for bkey in bdiam_S_strings:
+                key = bkey.decode('ascii')
+                diam_S_strings.append(key)
+            self.diam = {}
+            for S1 in diam_S_strings:
+                for S2 in diam_S_strings:
+                    key = f"{S1};{S2}"
+                    self.diam[key] = complex(np.array(calc_f[f"diam_{key}"]))
+
+    def save_KYY(self,calc_fn: str) -> None:
+        with h5py.File(calc_fn,'a') as calc_f:
+            if "S_strings" in calc_f:
+                del calc_f["S_strings"]
+            left_S_strings = set()
+            right_S_strings = set()
+            for key in self.KYY_0.keys():
+                left_S_strings.add(key[0])
+                right_S_strings.add(key[-1])
+            if not (left_S_strings == right_S_strings): raise RuntimeError
+            S_strings = list(left_S_strings)
+            calc_f.create_dataset("S_strings",data=np.array(list(S_strings),dtype='S'))
+            for S1 in S_strings:
+                for S2 in S_strings:
+                    key = f"{S1};{S2}"
+                    if f"KYY_0_{key}" in calc_f:
+                        del calc_f[f"KYY_0_{key}"]
+                    calc_f.create_dataset(f"KYY_0_{key}",data=self.KYY_0[key])
+                    if f"KYY_phi_{key}" in calc_f:
+                        del calc_f[f"KYY_phi_{key}"]
+                    calc_f.create_dataset(f"KYY_phi_{key}",data=self.KYY_phi[key])
+                    if f"KYY_ladder_{key}" in calc_f:
+                        del calc_f[f"KYY_ladder_{key}"]
+                    calc_f.create_dataset(f"KYY_ladder_{key}",data=self.KYY_ladder[key])
+                    if f"KYY_correction_{key}" in calc_f:
+                        del calc_f[f"KYY_correction_{key}"]
+                    calc_f.create_dataset(f"KYY_correction_{key}",data=self.KYY_correction[key])
+
+    def save_KXX(self,calc_fn: str) -> None:
+        with h5py.File(calc_fn,'a') as calc_f:
+            if "S_strings" in calc_f:
+                del calc_f["S_strings"]
+            left_S_strings = set()
+            right_S_strings = set()
+            for key in self.KXX_0.keys():
+                left_S_strings.add(key[0])
+                right_S_strings.add(key[-1])
+            if not (left_S_strings == right_S_strings): raise RuntimeError
+            S_strings = list(left_S_strings)
+            calc_f.create_dataset("S_strings",data=np.array(list(S_strings),dtype='S'))
+            for S1 in S_strings:
+                for S2 in S_strings:
+                    key = f"{S1};{S2}"
+                    if f"KXX_0_{key}" in calc_f:
+                        del calc_f[f"KXX_0_{key}"]
+                    calc_f.create_dataset(f"KXX_0_{key}",data=self.KXX_0[key])
+                    if f"KXX_phi_{key}" in calc_f:
+                        del calc_f[f"KXX_phi_{key}"]
+                    calc_f.create_dataset(f"KXX_phi_{key}",data=self.KXX_phi[key])
+                    if f"KXX_ladder_{key}" in calc_f:
+                        del calc_f[f"KXX_ladder_{key}"]
+                    calc_f.create_dataset(f"KXX_ladder_{key}",data=self.KXX_ladder[key])
+                    if f"KXX_correction_{key}" in calc_f:
+                        del calc_f[f"KXX_correction_{key}"]
+                    calc_f.create_dataset(f"KXX_correction_{key}",data=self.KXX_correction[key])
+
+    def load_KYY(self,calc_fn: str) -> None:
+        with h5py.File(calc_fn,'r') as calc_f:
+            bS_strings = np.array(calc_f["S_strings"])
+            S_strings = []
+            for bkey in bS_strings:
+                key = bkey.decode('ascii')
+                S_strings.append(key)
+            self.KYY_0 = {}
+            self.KYY_phi = {}
+            self.KYY_ladder = {}
+            self.KYY_correction = {}
+            for S1 in S_strings:
+                for S2 in S_strings:
+                    key = f"{S1};{S2}"
+                    self.KYY_0[key] = np.array(calc_f[f"KYY_0_{key}"])
+                    self.KYY_phi[key] = np.array(calc_f[f"KYY_phi_{key}"])
+                    self.KYY_ladder[key] = np.array(calc_f[f"KYY_ladder_{key}"])
+                    self.KYY_correction[key] = np.array(calc_f[f"KYY_correction_{key}"])
+    
+    def load_KXX(self,calc_fn: str) -> None:
+        with h5py.File(calc_fn,'r') as calc_f:
+            bS_strings = np.array(calc_f["S_strings"])
+            S_strings = []
+            for bkey in bS_strings:
+                key = bkey.decode('ascii')
+                S_strings.append(key)
+            self.KXX_0 = {}
+            self.KXX_phi = {}
+            self.KXX_ladder = {}
+            self.KXX_correction = {}
+            for S1 in S_strings:
+                for S2 in S_strings:
+                    key = f"{S1};{S2}"
+                    self.KXX_0[key] = np.array(calc_f[f"KXX_0_{key}"])
+                    self.KXX_phi[key] = np.array(calc_f[f"KXX_phi_{key}"])
+                    self.KXX_ladder[key] = np.array(calc_f[f"KXX_ladder_{key}"])
+                    self.KXX_correction[key] = np.array(calc_f[f"KXX_correction_{key}"])
 
     def compute_KXX(self, mf_calc: bool = False, regularization: float = 0.0, verbose: bool = False, S_strings = ["+","-"]) -> None:
         T_strings = ["+", "-"]
@@ -404,11 +543,40 @@ class Calculation():
         K_phi        = {}
         K_ladder     = {}
         K_correction = {}
-
-        def factor_and_spins(ML: list[str,str],MR: list[str,str]) -> list[complex, list[str,str]]:
-            raise NotImplementedError
-        
-        print("inv_chi_xyz and singular_parts are overwritten by compute_KYY.")
+        def factors_and_spins(ML: list[str,str],MR: list[str,str]) -> list[list[complex], list[list[int,int]]]:
+            SL = ML[0]
+            TL = ML[1]
+            SR = MR[0]
+            TR = MR[1]
+            if (TL != TR):
+                return [complex(0.0)], [[0,0]]
+            else:
+                fs = []
+                spins = []
+                if TL == "+":
+                    sign = +1.0
+                else:
+                    sign = -1.0
+                for sigma1 in [0,2]:
+                    for sigma2 in [0,2]:
+                        spin_pair = [sigma1,sigma2] 
+                        f = 1.0 / 4.0
+                        if SL != "tau":
+                            f *= (-1j)
+                        if SR != "tau":
+                            f *= (-1j)
+                        if sigma1 == 0:
+                            f *= 1.0
+                        elif sigma1 == 2:
+                            f *= -1j*sign
+                        if sigma2 == 0:
+                            f *= 1.0
+                        elif sigma2 == 2:
+                            f *= +1j*sign
+                        fs.append(f)
+                        spins.append(spin_pair)
+                return fs,spins
+        print("inv_chi_xyz and singular_parts are overwritten by compute_KXX.")
         chi_reg = self.compute_chi(regularization=regularization)
         self.compute_singular_parts(regularization=regularization)
         self.compute_inv_chi_xyz(chi = chi_reg)
@@ -421,18 +589,54 @@ class Calculation():
                 K_phi[key]        = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
                 K_ladder[key]     = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
                 K_correction[key] = np.zeros(self.chi.im_data.shape[:3],dtype=complex)
-                for T1 in T_strings:
-                    for T2 in T_strings:
-                        f,spins = factor_and_spins([S1,T1],[S2,T2])
-                        multikey = f"{S1},{T1};{S2},{T2}"
-                        M1 = f"{S1},{T1}"
-                        M2 = f"{S2},{T2}"
-                        if verbose: print(key,multikey,M1,M2,spins)
-                        if not mf_calc:
-                            raise NotImplementedError
-                        else:
-                            raise NotImplementedError
-        return K_0, K_phi, K_ladder, K_correction
+                for T in T_strings:
+                    if T == "+":
+                        sign =  1.0
+                    else:
+                        sign = -1.0
+                    multikey = f"{S1},{T};{S2},{T}"
+                    M1 = f"{S1},{T}"
+                    M2 = f"{S2},{T}"
+                    fs,spins = factors_and_spins([S1,T],[S2,T])
+                    if verbose: print(key,multikey,M1,M2,fs,spins)
+                    if not mf_calc:
+                        for f_idx, f in enumerate(fs):
+                            spin_pair = spins[f_idx]
+                            # K_0
+                            array = self.chi0LR[multikey].im_data_spin[:,:,:,*spin_pair] 
+                            for k in range(len(self.bfreqs)):
+                                K_0[key][:,:,k]            += shift_q(f*(array[:,:,k]),+sign*self.params["Q"],self.kmesh)
+                            # K_phi
+                            array = self.phitLR[multikey].im_data_spin[:,:,:,*spin_pair] 
+                            for k in range(len(self.bfreqs)):
+                                K_phi[key][:,:,k]          += shift_q(f*(array[:,:,k]),+sign*self.params["Q"],self.kmesh)
+                            # K_ladder
+                            array = (self.phiL[M1] @ self.inversed_singular_part_right @ self.U_matrix_extended @ self.phiR[M2]).im_data_spin[:,:,:,*spin_pair]
+                            for k in range(len(self.bfreqs)):
+                                K_ladder[key][:,:,k]       += shift_q(f*(array[:,:,k]),+sign*self.params["Q"],self.kmesh)
+                            # K_correction
+                            array = (self.phiL[M1] @ self.inversed_singular_part_right @ self.inv_chi_xyz @ self.inversed_singular_part_left @ self.phiR[M2]).im_data_spin[:,:,:,*spin_pair]
+                            for k in range(len(self.bfreqs)):
+                                K_correction[key][:,:,k]   += shift_q(f*(array[:,:,k]),+sign*self.params["Q"],self.kmesh)
+                    else:
+                        for f_idx, f in enumerate(fs):
+                            spin_pair = spins[f_idx]
+                            # K_0
+                            array = self.chi0LR[multikey].im_data_spin[:,:,:,*spin_pair] 
+                            for k in range(len(self.bfreqs)):
+                                K_0[key][:,:,k]          += shift_q(f*(array[:,:,k]),+sign*self.params["Q"],self.kmesh)
+                            # K_ladder
+                            array = (self.chi0L[M1] @ self.inversed_singular_part_right @ self.U_matrix_extended @ self.chi0R[M2]).im_data_spin[:,:,:,*spin_pair]
+                            for k in range(len(self.bfreqs)):
+                                K_ladder[key][:,:,k]     += shift_q(f*(array[:,:,k]),+sign*self.params["Q"],self.kmesh)
+                            # K_correction
+                            array = (self.chi0L[M1] @ self.inversed_singular_part_right @ self.inv_chi_xyz @ self.inversed_singular_part_left @ self.chi0R[M2]).im_data_spin[:,:,:,*spin_pair]
+                            for k in range(len(self.bfreqs)):
+                                K_correction[key][:,:,k] += shift_q(f*(array[:,:,k]),+sign*self.params["Q"],self.kmesh)
+        self.KXX_0          = K_0
+        self.KXX_phi        = K_phi
+        self.KXX_ladder     = K_ladder
+        self.KXX_correction = K_correction
        
 
 def get_complex_data(h5f,data_name):
