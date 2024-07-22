@@ -2,14 +2,14 @@ import numpy as np
 from scipy.linalg import norm
 from scipy.interpolate import RegularGridInterpolator
 
-def shift_q(array2d: np.ndarray, q: np.ndarray, K: np.ndarray, method="linear") -> np.ndarray:
+def shift_q(array2d: np.ndarray, q: np.ndarray, K: np.ndarray, method="fft") -> np.ndarray:
     """Method to shift a 2D numerial data defined on a square mesh in K-space on a fixed vector.
 
     Args:
         array2d (np.ndarray): 2D data to shift.
         q (np.ndarray): Shifting vector.
         K (np.ndarray): 1D mesh of points along each of the axes.
-        method (str, optional): Method to use for the interpolation. Is passed to the RegularGridInterpolator. Defaults to "linear".
+        method (str, optional): If method is "fft", than FFT is used. Else method is passed to the RegularGridInterpolator. Defaults to "fft".
 
     Returns:
         np.ndarray: Shifted 2D data.
@@ -17,15 +17,41 @@ def shift_q(array2d: np.ndarray, q: np.ndarray, K: np.ndarray, method="linear") 
     is_ok = (len(array2d.shape) == 2) and (len(K.shape) == 1) and (array2d.shape[0] == array2d.shape[1] == K.shape[0]) and (len(q.shape) == 1) and (q.shape[0] == 2)
     if not is_ok:
         raise RuntimeError
-    interp = RegularGridInterpolator((K,K),array2d,method=method)
-    new_array2d = np.empty_like(array2d)
-    for ix,kx in enumerate(K):
-        for iy,ky in enumerate(K):
-            k = np.array([kx,ky])
-            new_k = k + q
-            new_k = periodic(new_k.copy())
-            new_array2d[ix,iy] = interp(new_k)[0]
-    return new_array2d
+    if method == "fft":
+        return shift_q_2d(array2d, q, K)
+    else:
+        interp = RegularGridInterpolator((K,K),array2d,method=method)
+        new_array2d = np.empty_like(array2d)
+        for ix,kx in enumerate(K):
+            for iy,ky in enumerate(K):
+                k = np.array([kx,ky])
+                new_k = k + q
+                new_k = periodic(new_k.copy())
+                new_array2d[ix,iy] = interp(new_k)[0]
+        return new_array2d
+
+def shift_q_1d(data_1d, shift_1d, mesh_1d):
+    data_1d_unique = data_1d[:-1]
+    mesh_1d_unique = mesh_1d[:-1]
+    dx = mesh_1d_unique[1] - mesh_1d_unique[0]
+    fft = np.fft.fft(data_1d_unique)
+    freqs = np.fft.fftfreq(len(mesh_1d_unique),dx)
+    # Note that -1 is used here! f_s(q) = f(q + s) (Это преобразование соответствует сдигу НАЗАД.)
+    shifted_fft_unique = fft * np.exp(+2j*np.pi*freqs*shift_1d)
+    shifted_data_unique = np.fft.ifft(shifted_fft_unique)
+    shifted_data = np.empty_like(data_1d)
+    shifted_data[:-1] = shifted_data_unique
+    shifted_data[-1] = shifted_data[0]
+    return(shifted_data)
+
+def shift_q_2d(data_2d, shift_2d, mesh_1d):
+    shifted_data_x = np.empty_like(data_2d)
+    for iqy in range(len(mesh_1d)):
+        shifted_data_x[:,iqy] = shift_q_1d(data_2d[:,iqy], shift_2d[0], mesh_1d)
+    shifted_data_xy = np.empty_like(data_2d)
+    for iqx in range(len(mesh_1d)):
+        shifted_data_xy[iqx,:] = shift_q_1d(shifted_data_x[iqx,:], shift_2d[1], mesh_1d)
+    return shifted_data_xy
 
 def v2d(vx, vy):
     """ Function to easily create 2d wave vectors."""

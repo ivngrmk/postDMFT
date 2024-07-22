@@ -230,8 +230,17 @@ class Calculation():
                         U_matrix_extended_data[iqx, iqy, k, :, :] = self.U_matrix
             self.U_matrix_extended.load_from_array(U_matrix_extended_data)
 
-    def no_zero_iq(self,array: np.ndarray) -> np.ndarray:
-        temp_list = list(array.copy())
+    def no_zero_iq(self, array1d: np.ndarray) -> np.ndarray:
+        """
+        Remove the self.zero_iq element from the given array.
+
+        Parameters:
+        array1d (np.ndarray): The input 1d array from which the zero_iq element will be removed.
+
+        Returns:
+        np.ndarray: A new 1d array with the zero_iq element removed.
+        """
+        temp_list = list(array1d.copy())
         del temp_list[self.zero_iq]
         return np.array(temp_list)
 
@@ -381,40 +390,50 @@ class Calculation():
                 self.diam[f"{S1};{S2}"] = diam_K[1+S1_idx,1+S2_idx]
 
     def compute_KYY(self, mf_calc: bool = False, regularization: float = 0.0, verbose: bool = False, S_strings = ["+","-"]) -> None:
-        T_strings = ["+", "-"]
+        """Compute dictionary for KYY correlation functions.
+
+        Args:
+            mf_calc (bool, optional): Flag to determine if mean field calculation should be used. Defaults to False.
+            regularization (float, optional): Regularization parameter for chi computation. Defaults to 0.0.
+            verbose (bool, optional): Flag to enable verbose output. Defaults to False.
+            S_strings (list, optional): List of S-type indexes to iterate over.. Defaults to ["+","-"].
+
+        Raises:
+            RuntimeError: If shapes are incompatible.
+        """
         K_0          = {}
         K_phi        = {}
         K_ladder     = {}
         K_correction = {}
         def factor_and_spins(ML: list[str,str],MR: list[str,str]) -> list[complex, list[int,int]]:
-            if not (len(ML) == 2 and len(MR) == 2): raise RuntimeError
-            SL = ML[0]
-            TL = ML[1]
-            SR = MR[0]
-            TR = MR[1]
+            """Compute the factor and spin values for given ML=[SL,TL] and MR=[SR,TR] combination.
+
+            Args:
+                ML (list[str,str]): left multiindex.
+                MR (list[str,str]): right multiindex.
+
+            Raises:
+                RuntimeError: If shapes are incompatible.
+
+            Returns:
+                list[complex, list[int,int]]: A list containing the factor (complex number) and spin values (list of integers).
+            """
+            if not (len(ML) == 2 and len(MR) == 2):
+                raise RuntimeError("Input lists must each contain exactly two elements.")
+            SL, TL = ML
+            SR, TR = MR
             f = complex(1.0)
             if SL != "tau":
                 f *= (-1j)
             if SR != "tau":
                 f *= (-1j)
-            if TL == "+":
-                sigmaL = 1 # y
-                f *= 1.0
-            elif TL == "-":
-                sigmaL = -1 # 0
-                f *= 1.0
-            if TR == "+":
-                sigmaR = 1 # y
-                f *= 1.0
-            elif TR == "-":
-                sigmaR = -1 # 0
-                f *= 1.0
+            sigmaL = 1 if TL == "+" else -1 # elif TL == "-"
+            sigmaR = 1 if TR == "+" else -1 # elif TR == "-"
             return f, [sigmaL,sigmaR]
         print("inv_chi_xyz and singular_parts are overwritten by compute_KYY.")
         chi_reg = self.compute_chi(regularization=regularization)
         self.compute_singular_parts(regularization=regularization)
         self.compute_inv_chi_xyz(chi = chi_reg)
-        S_strings = ["x","y"]
         T_strings = ["+", "-"]
         for S1 in S_strings:
             for S2 in S_strings:
