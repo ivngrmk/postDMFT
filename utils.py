@@ -68,6 +68,12 @@ def get_diag(array_2d: np.ndarray):
     diag = np.array([array_2d[i,i] for i in range(npoints)])
     return diag
 
+def get_contrdiag(array_2d: np.ndarray):
+    if (len(array_2d.shape) != 2 or array_2d.shape[0] != array_2d.shape[1]): raise RuntimeError
+    npoints = array_2d.shape[0]
+    contrdiag = np.array([array_2d[i,-i-1] for i in range(npoints)])
+    return contrdiag
+
 def spin2index(symbol):
     if symbol == 'x':
         return 0

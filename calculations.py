@@ -243,6 +243,15 @@ class Calculation():
         temp_list = list(array1d.copy())
         del temp_list[self.zero_iq]
         return np.array(temp_list)
+    
+    def no_zero_iqs(self, array1d: np.ndarray, n: int) -> np.ndarray:
+        res_array = np.zeros(len(array1d)-2*n-1,dtype=array1d.dtype)
+        idx = -1
+        for i in range(len(array1d)):
+            if i < self.zero_iq - n or i > self.zero_iq + n:
+                idx +=1
+                res_array[idx] = array1d[i]
+        return res_array
 
     def __check_input(self):
         # Check if updated calc_rules are consistent.
@@ -304,6 +313,7 @@ class Calculation():
         with h5py.File(h5fn, 'r') as f:
             attrs = f.attrs
             mu = attrs["mu"][0]
+            nkp_integration = attrs["nkp"][0]
             nffrq = attrs["nffrq"][0]
             nbfrq = attrs["nbfrq"][0]
             beta = attrs["beta"][0]
@@ -333,6 +343,7 @@ class Calculation():
         params["x"] = x
         params["nkp"] = nkp
         params["Q"] = Q
+        params["nkp_integration"] = nkp_integration
         try:
             params["symbf"] = symbf
         except:
@@ -389,7 +400,7 @@ class Calculation():
             for S2_idx, S2 in enumerate(diam_S_strings):
                 self.diam[f"{S1};{S2}"] = diam_K[1+S1_idx,1+S2_idx]
 
-    def compute_KYY(self, mf_calc: bool = False, regularization: float = 0.0, verbose: bool = False, S_strings = ["+","-"]) -> None:
+    def compute_KYY(self, mf_calc: bool = False, regularization: float = 0.0, verbose: bool = False, S_strings = ["x","y"]) -> None:
         """Compute dictionary for KYY correlation functions.
 
         Args:
@@ -585,7 +596,7 @@ class Calculation():
                     self.KXX_ladder[key] = np.array(calc_f[f"KXX_ladder_{key}"])
                     self.KXX_correction[key] = np.array(calc_f[f"KXX_correction_{key}"])
 
-    def compute_KXX(self, mf_calc: bool = False, regularization: float = 0.0, verbose: bool = False, S_strings = ["+","-"]) -> None:
+    def compute_KXX(self, mf_calc: bool = False, regularization: float = 0.0, verbose: bool = False, S_strings = ["x","y"]) -> None:
         T_strings = ["+", "-"]
         K_0          = {}
         K_phi        = {}
@@ -628,7 +639,6 @@ class Calculation():
         chi_reg = self.compute_chi(regularization=regularization)
         self.compute_singular_parts(regularization=regularization)
         self.compute_inv_chi_xyz(chi = chi_reg)
-        S_strings = ["x","y"]
         T_strings = ["+", "-"]
         for S1 in S_strings:
             for S2 in S_strings:

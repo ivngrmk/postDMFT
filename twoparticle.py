@@ -197,8 +197,8 @@ class iQISTResponse():
             raise RuntimeError("Interpolation wasn't performed yet.")
 
 
-    def refine_wv_mesh(self, new_nkp: int):
-        self.interpolate()
+    def refine_wv_mesh(self, new_nkp: int, method="RB", method_settings={"Nx": 5, "Ny": 5}):
+        self.interpolate(method=method,method_settings=method_settings)
         full_new_nkp = new_nkp*2 + 1
         new_im_data = np.zeros(
             (full_new_nkp, full_new_nkp, self.nbfrq, 4, 4), dtype=complex)
@@ -354,11 +354,11 @@ class Chi(iQISTResponse):
         inv_chi = Chi()
         inv_chi.load_from_array(self.inv(regularization=regularization).im_data)
 
-    def refine_wv_mesh(self,new_nkp: int):
+    def refine_wv_mesh(self,new_nkp: int, method="RB", method_settings={"Nx": 5, "Ny": 5}):
         iqist_response = iQISTResponse()
         iqist_response.load_from_array(self.im_data)
         new_chi = Chi()
-        new_chi.load_from_array(iqist_response.refine_wv_mesh(new_nkp=new_nkp).im_data)
+        new_chi.load_from_array(iqist_response.refine_wv_mesh(new_nkp=new_nkp, method="RB", method_settings={"Nx": 5, "Ny": 5}).im_data)
         return new_chi
 
     def initialize_continuation(self, wv_path: BZPath, re_mesh: np.ndarray, component: tuple):
@@ -466,3 +466,65 @@ def compute_inv_chi_xyz_from_chi(chi: Chi) -> iQISTResponse:
                 inv_chi_xyz_data[iqx,iqy,k,:,:] = Chi.TR @ inv_chi_xyz_data[iqx,iqy,k,:,:] @ Chi.TL
     inv_chi_xyz.load_from_array(inv_chi_xyz_data)
     return inv_chi_xyz
+
+def compute_X_from_phi(U_value: float, phi: iQISTResponse, regularization=0.0):
+    U_matrix = np.zeros((4, 4))
+    U_matrix[ 0,-1] = -U_value
+    U_matrix[-1, 0] = -U_value
+    U_matrix[ 1, 1] = +U_value
+    U_matrix[ 2, 2] = +U_value
+
+    singular_part_right = SingularPartRight(U_value=U_value)
+    singular_part_right.compute_from_phi(phi)
+    temp_data = singular_part_right.im_data.copy()
+    singular_part_right = Chi()
+    singular_part_right.load_from_array(temp_data)
+    singular_part_right_spin = singular_part_right.im_data_spin.copy();
+
+    full_nkp = singular_part_right_spin.shape[0]
+    if not (full_nkp == singular_part_right_spin.shape[1]):
+        raise RuntimeError
+    full_nbfrq = singular_part_right_spin.shape[2]
+
+    lambdas = np.zeros((full_nkp,full_nkp,full_nbfrq,4),dtype=complex)
+    V = np.zeros((full_nkp,full_nkp,full_nbfrq,4,4),dtype=complex)
+    for iqx in range(full_nkp):
+        for iqy in range(full_nkp):
+            for k in range(full_nbfrq):
+                lambdas[iqx,iqy,k,:], V[iqx,iqy,k,:,:] = lg.eig(singular_part_right_spin[iqx,iqy,k,:,:])
+    Lambda = np.empty_like(V)
+    for iqx in range(full_nkp):
+        for iqy in range(full_nkp):
+            for k in range(full_nbfrq):
+                Lambda[iqx,iqy,k,:,:] = np.diag(lambdas[iqx,iqy,k,:])
+    inv_V = np.empty_like(V)
+    for iqx in range(full_nkp):
+        for iqy in range(full_nkp):
+            for k in range(full_nbfrq):
+                inv_V[iqx,iqy,k,:,:] = np.linalg.inv(V[iqx,iqy,k,:,:])
+
+    U_matrix_extended_spin = np.empty_like(V)
+    for iqx in range(full_nkp):
+        for iqy in range(full_nkp):
+            for k in range(full_nbfrq):
+                U_matrix_extended_spin[iqx,iqy,k,:,:] = U_matrix.copy()
+
+    X = np.zeros((full_nkp,full_nkp,full_nbfrq,4,4,4),dtype=complex)
+    for iqx in range(full_nkp):
+        for iqy in range(full_nkp):
+            for k in range(full_nbfrq):
+                temp = lg.inv(2.0*U_matrix_extended_spin[iqx,iqy,k,:,:])@V[iqx,iqy,k,:,:]@(1/2.0*np.identity(4) - Lambda[iqx,iqy,k,:,:])
+                for alpha in range(4):
+                    for beta in range(4):
+                        for delta in range(4):
+                            X[iqx,iqy,k,alpha,beta,delta] = temp[alpha,delta] * inv_V[iqx,iqy,k,delta,beta]/2.0
+
+    for iqx in range(full_nkp):
+        for iqy in range(full_nkp):
+            for k in range(full_nbfrq):
+                for alpha in range(4):
+                    for beta in range(4):
+                        X[iqx,iqy,k,alpha,beta,:] = [x for _, x in sorted(zip(abs(lambdas[iqx,iqy,k,:]), X[iqx,iqy,k,alpha,beta,:]))]
+                lambdas[iqx,iqy,k,:] = sorted(abs(lambdas[iqx,iqy,k,:]))
+
+    return X, lambdas
