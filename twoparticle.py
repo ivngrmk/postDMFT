@@ -474,17 +474,23 @@ def compute_X_from_phi(U_value: float, phi: iQISTResponse, regularization=0.0):
     U_matrix[ 1, 1] = +U_value
     U_matrix[ 2, 2] = +U_value
 
+    full_nkp = phi.im_data.shape[0]
+    if not (full_nkp == phi.im_data.shape[1]):
+        raise RuntimeError
+    full_nbfrq = phi.im_data.shape[2]
+
     singular_part_right = SingularPartRight(U_value=U_value)
     singular_part_right.compute_from_phi(phi)
     temp_data = singular_part_right.im_data.copy()
+    print("Used regularization:",regularization)
+    for iqx in range(full_nkp):
+        for iqy in range(full_nkp):
+            for k in range(full_nbfrq):
+                temp_data[iqx,iqy,k,:,:] += np.identity(4)*regularization
     singular_part_right = Chi()
     singular_part_right.load_from_array(temp_data)
     singular_part_right_spin = singular_part_right.im_data_spin.copy();
 
-    full_nkp = singular_part_right_spin.shape[0]
-    if not (full_nkp == singular_part_right_spin.shape[1]):
-        raise RuntimeError
-    full_nbfrq = singular_part_right_spin.shape[2]
 
     lambdas = np.zeros((full_nkp,full_nkp,full_nbfrq,4),dtype=complex)
     V = np.zeros((full_nkp,full_nkp,full_nbfrq,4,4),dtype=complex)
@@ -503,11 +509,22 @@ def compute_X_from_phi(U_value: float, phi: iQISTResponse, regularization=0.0):
             for k in range(full_nbfrq):
                 inv_V[iqx,iqy,k,:,:] = np.linalg.inv(V[iqx,iqy,k,:,:])
 
+    U_matrix_extended = Chi()
+    U_matrix_extended_data = np.empty_like(phi.im_data)
+    nkp_x, nkp_y, full_nbfrq = phi.im_data.shape[:3]
+    for iqx in range(nkp_x):
+        for iqy in range(nkp_y):
+            for k in range(full_nbfrq):
+                U_matrix_extended_data[iqx, iqy, k, :, :] = U_matrix
+    U_matrix_extended.load_from_array(U_matrix_extended_data)
+
     U_matrix_extended_spin = np.empty_like(V)
     for iqx in range(full_nkp):
         for iqy in range(full_nkp):
             for k in range(full_nbfrq):
-                U_matrix_extended_spin[iqx,iqy,k,:,:] = U_matrix.copy()
+                # calc.U_matrix_extended.im_data_spin[iqx,iqy,k,:,:]
+                ### Перепроверить! ###
+                U_matrix_extended_spin[iqx,iqy,k,:,:] = U_matrix_extended.im_data_spin[iqx,iqy,k,:,:]
 
     X = np.zeros((full_nkp,full_nkp,full_nbfrq,4,4,4),dtype=complex)
     for iqx in range(full_nkp):
@@ -518,13 +535,16 @@ def compute_X_from_phi(U_value: float, phi: iQISTResponse, regularization=0.0):
                     for beta in range(4):
                         for delta in range(4):
                             X[iqx,iqy,k,alpha,beta,delta] = temp[alpha,delta] * inv_V[iqx,iqy,k,delta,beta]/2.0
+    if np.any(np.isnan(X)):
+        raise RuntimeError
 
     for iqx in range(full_nkp):
         for iqy in range(full_nkp):
             for k in range(full_nbfrq):
+                idx = lambdas[iqx,iqy,k,:].argsort()   
+                lambdas[iqx,iqy,k,:] = lambdas[iqx,iqy,k,idx]
                 for alpha in range(4):
                     for beta in range(4):
-                        X[iqx,iqy,k,alpha,beta,:] = [x for _, x in sorted(zip(abs(lambdas[iqx,iqy,k,:]), X[iqx,iqy,k,alpha,beta,:]))]
-                lambdas[iqx,iqy,k,:] = sorted(abs(lambdas[iqx,iqy,k,:]))
+                        X[iqx,iqy,k,alpha,beta,:] = X[iqx,iqy,k,alpha,beta,idx]
 
     return X, lambdas
